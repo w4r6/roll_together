@@ -1,80 +1,41 @@
 # Roll Together
-Roll Together is a browser extension for Google Chrome and Mozilla Firefox. It synchronizes Crunchyroll Videos that are being played at multiple computers.
 
-## Retirement note
-I believe this extension's purpose was completed as we went through the pandemic and were able to still feel close our friends, at least while we watched anime. Since then, several other forks and new extensions with similar purposes were created. Finally, the maintainance cost, as an totally free open source project, increased with manifest v3, changes in the crunchyroll player and pushbacks from Google to publish fixes.
+Roll Together is now organized as an npm workspace monorepo containing the browser extension and its sync backend.
 
-I want to leave a huge thanks to everyone who contributed to this project.
+## Structure
 
-## Browser Support
-- **Chrome/Chromium**: Manifest V3 (Chrome 116+)
-- **Firefox**: Manifest V2 (Firefox 109+)
+- `apps/extension` - Chrome/Firefox browser extension
+- `apps/backend` - Express and Socket.IO sync backend
 
-## Download
-- **Chrome**: [Chrome Web Store](https://chrome.google.com/webstore/detail/ilpfeljgdikoabaclkjgkbeegeoijfca)
-- **Firefox**: Available as a signed add-on (coming soon)
+## Setup
 
-## Development Setup
-
-### Prerequisites
-- Node.js and npm
-- Git
-
-### Building the Extension
-
-#### For Chrome (Manifest V3):
 ```bash
 npm install
+```
+
+## Common Commands
+
+```bash
+npm run build
 npm run build:chrome
-# Output will be in the 'build' directory
-```
-
-#### For Firefox (Manifest V2):
-```bash
-npm install
 npm run build:firefox
-# Output will be in the 'build-firefox' directory
+npm run build:backend
+npm run start:backend:dev
 ```
 
-#### For both browsers:
-```bash
-npm run build:production:chrome
-npm run build:production:firefox
-npm run package
-# Creates rolltogether-chrome.zip and rolltogether-firefox.zip
-```
+Extension build outputs are written under `apps/extension/build` and `apps/extension/build-firefox`.
 
-### Development Mode
-```bash
-# Watch mode for Chrome
-npm run watch:chrome
+## DigitalOcean Deployment
 
-# Watch mode for Firefox
-npm run watch:firefox
-```
+The backend is configured for DigitalOcean App Platform with `.do/app.yaml`.
 
-## Installation from Source
+1. Create a DigitalOcean API token.
+2. Add it to this GitHub repository as `DIGITALOCEAN_ACCESS_TOKEN`.
+3. Push to `main` or run the `Deploy Backend to DigitalOcean` workflow manually.
 
-### Chrome/Chromium
-1. Open the Extension Management page by navigating to chrome://extensions.
-2. Enable Developer Mode by clicking the toggle switch next to Developer mode.
-3. Click the LOAD UNPACKED button and select the `build` directory.
+The production extension config currently points to `https://roll-together-backend.ondigitalocean.app`. If DigitalOcean assigns a different app URL, update `apps/extension/env.json` before building the production extension.
 
-### Firefox
-1. Navigate to about:debugging
-2. Click "This Firefox"
-3. Click "Load Temporary Add-on"
-4. Select any file in the `build-firefox` directory
+## App Docs
 
-![](https://developer.chrome.com/static/images/get_started/load_extension.png)
-
-## TODO
-- [x] Customizable Palette
-- [x] Improve Logo/Name
-- [x] Improve structure to allow more than one tab at the same time
-- [x] Firefox Browser Support
-- [ ] Work with autoplay
-- [ ] Create a Website
-
-## Related Repos
-Backend repo: https://github.com/samuraiexx/roll_together_backend
+- Extension details: `apps/extension/README.md`
+- Backend source: `apps/backend`

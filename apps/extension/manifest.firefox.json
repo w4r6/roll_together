@@ -24,7 +24,8 @@
     "storage",
     "*://www.crunchyroll.com/*",
     "*://static.crunchyroll.com/*",
-    "*://rt-sync.azurewebsites.net/*"
+    "http://localhost:3000/*",
+    "*://*.ondigitalocean.app/*"
   ],
   "browser_action": {
     "default_popup": "popup.html",

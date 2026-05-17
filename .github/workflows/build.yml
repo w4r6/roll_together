@@ -22,6 +22,7 @@ jobs:
       with:
         node-version: '18'
         cache: 'npm'
+        cache-dependency-path: package-lock.json
     
     - name: Install dependencies
       run: npm ci
@@ -36,13 +37,13 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: rolltogether-${{ matrix.browser }}
-        path: build${{ matrix.browser == 'firefox' && '-firefox' || '' }}
+        path: apps/extension/build${{ matrix.browser == 'firefox' && '-firefox' || '' }}
 
     - name: Upload package artifact
       uses: actions/upload-artifact@v4
       with:
         name: rolltogether-${{ matrix.browser }}-zip
-        path: rolltogether-${{ matrix.browser }}.zip
+        path: apps/extension/rolltogether-${{ matrix.browser }}.zip
 
   release:
     needs: package
@@ -67,7 +68,7 @@ jobs:
     - name: Extract version from manifest
       id: get_version
       run: |
-        VERSION=$(grep -Po '"version": "\K[^"]*' manifest.json)
+        VERSION=$(grep -Po '"version": "\K[^"]*' apps/extension/manifest.json)
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Found version: $VERSION"
     
