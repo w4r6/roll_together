@@ -20,7 +20,7 @@ I want to leave a huge thanks to everyone who contributed to this project.
 - Node.js and npm
 - Git
 
-The development extension build points to `http://localhost:3000`. The production build points to `https://roll-together-backend.ondigitalocean.app`; update `env.json` if your DigitalOcean App Platform URL is different.
+The development extension build points to `http://localhost:3000`. The production build points to `https://roll-together-backend-weubw.ondigitalocean.app`.
 
 ### Building the Extension
 

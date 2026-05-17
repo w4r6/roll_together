@@ -33,7 +33,7 @@ The backend is configured for DigitalOcean App Platform with `.do/app.yaml`.
 2. Add it to this GitHub repository as `DIGITALOCEAN_ACCESS_TOKEN`.
 3. Push to `main` or run the `Deploy Backend to DigitalOcean` workflow manually.
 
-The production extension config currently points to `https://roll-together-backend.ondigitalocean.app`. If DigitalOcean assigns a different app URL, update `apps/extension/env.json` before building the production extension.
+The production extension config currently points to `https://roll-together-backend-weubw.ondigitalocean.app`.
 
 ## App Docs
 

@@ -25,7 +25,7 @@
 		"*://www.crunchyroll.com/*",
 		"*://static.crunchyroll.com/*",
 		"http://localhost:3000/*",
-		"*://*.ondigitalocean.app/*"
+		"https://roll-together-backend-weubw.ondigitalocean.app/*"
 	],
 	"action": {
 		"default_popup": "popup.html",
