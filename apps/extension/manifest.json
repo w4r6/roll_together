@@ -24,7 +24,6 @@
 	"host_permissions": [
 		"*://www.crunchyroll.com/*",
 		"*://static.crunchyroll.com/*",
-		"http://localhost:3000/*",
 		"https://roll-together-backend-weubw.ondigitalocean.app/*"
 	],
 	"action": {
