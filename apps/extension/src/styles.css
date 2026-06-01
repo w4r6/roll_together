@@ -189,7 +189,7 @@ input:focus, textarea:focus, select:focus {
 
 .container {
   width: 290px;
-  height: 205px;
+  min-height: 205px;
   background-color: white;
   padding: 8px 24px;
   display: flex;
@@ -205,6 +205,29 @@ input:focus, textarea:focus, select:focus {
   display: flex;
   justify-content: center;
   margin: auto;
+}
+
+.repoLink {
+  align-items: center;
+  color: #333;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 6px;
+  justify-content: center;
+  line-height: 16px;
+  margin-top: auto;
+  padding-top: 12px;
+  text-decoration: none;
+}
+
+.repoLink:hover {
+  text-decoration: underline;
+}
+
+.githubLogo {
+  fill: currentColor;
+  height: 16px;
+  width: 16px;
 }
 
 .firstPage .secondPage {

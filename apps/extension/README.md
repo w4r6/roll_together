@@ -11,7 +11,7 @@ I want to leave a huge thanks to everyone who contributed to this project.
 - **Firefox**: Manifest V2 (Firefox 109+)
 
 ## Download
-- **Chrome**: [Chrome Web Store](https://chrome.google.com/webstore/detail/ilpfeljgdikoabaclkjgkbeegeoijfca)
+- **Chrome**: [Chrome Web Store](https://chromewebstore.google.com/detail/roll-together/opfkhpijmigdkjafeenfgbndokfphamh)
 - **Firefox**: Available as a signed add-on (coming soon)
 
 ## Development Setup
