@@ -12,12 +12,12 @@ import {
 } from "./types";
 import { extensionAPI } from "./browser-compat";
 
-const g_port = extensionAPI.runtime.connect({ name: PortName.CONTENT_SCRIPT });
-
 const ignoreNext: { [index: string]: boolean } = {};
+let g_port: chrome.runtime.Port | undefined = undefined;
 let g_player: HTMLVideoElement | undefined = undefined;
 let g_lastFrameProgress: number | undefined = undefined;
 let g_heartBeatInterval: NodeJS.Timeout | undefined = undefined; // Keeps Service Worker alive while connected
+let g_reconnectTimeout: NodeJS.Timeout | undefined = undefined;
 let g_pendingMessages: Message[] = [];
 let g_playPromise: Promise<void> | undefined = undefined;
 
@@ -63,11 +63,11 @@ const handleLocalAction = (action: Actions) => (): void => {
   switch (action) {
     case Actions.PLAY:
     case Actions.PAUSE:
-      g_port.postMessage({ type, state, currentProgress });
+      postServiceWorkerMessage({ type, state, currentProgress });
       break;
     case Actions.TIME_UPDATE:
       if (timeJump) {
-        g_port.postMessage({ type, state, currentProgress });
+        postServiceWorkerMessage({ type, state, currentProgress });
       }
       break;
   }
@@ -112,7 +112,7 @@ function sendRoomConnectionMessage(): void {
   const { state, currentProgress }: { state: States; currentProgress: number } =
     getStates();
   const type = MessageTypes.CS2SW_ROOM_CONNECTION;
-  g_port.postMessage({ state, currentProgress, type });
+  postServiceWorkerMessage({ state, currentProgress, type });
 }
 
 function handleRemoteUpdate(message: Message): void {
@@ -146,7 +146,7 @@ function handleServiceWorkerMessage(serviceWorkerMessage: Message) {
   switch (serviceWorkerMessage.type) {
     case MessageTypes.SW2CS_ROOM_CONNECTION:
       g_heartBeatInterval = setInterval(
-        () => g_port.postMessage({ type: MessageTypes.CS2SW_HEART_BEAT }),
+        () => postServiceWorkerMessage({ type: MessageTypes.CS2SW_HEART_BEAT }),
         20000
       );
       sendRoomConnectionMessage();
@@ -161,6 +161,62 @@ function handleServiceWorkerMessage(serviceWorkerMessage: Message) {
       break;
     default:
       throw "Invalid BackgroundMessageType: " + serviceWorkerMessage.type;
+  }
+}
+
+function connectToServiceWorker(): void {
+  if (g_port) {
+    return;
+  }
+
+  try {
+    const port = extensionAPI.runtime.connect({ name: PortName.CONTENT_SCRIPT });
+    g_port = port;
+
+    port.onMessage.addListener(handleServiceWorkerMessage);
+    port.onDisconnect.addListener(() => {
+      if (g_port === port) {
+        g_port = undefined;
+      }
+
+      if (g_heartBeatInterval) {
+        clearInterval(g_heartBeatInterval);
+        g_heartBeatInterval = undefined;
+      }
+
+      scheduleServiceWorkerReconnect();
+    });
+  } catch (err) {
+    log("Failed to connect to service worker", err);
+    scheduleServiceWorkerReconnect();
+  }
+}
+
+function scheduleServiceWorkerReconnect(): void {
+  if (g_reconnectTimeout) {
+    return;
+  }
+
+  g_reconnectTimeout = setTimeout(() => {
+    g_reconnectTimeout = undefined;
+    connectToServiceWorker();
+  }, 1000);
+}
+
+function postServiceWorkerMessage(message: Message): void {
+  connectToServiceWorker();
+
+  if (!g_port) {
+    log("No service worker port available; dropping message", message);
+    return;
+  }
+
+  try {
+    g_port.postMessage(message);
+  } catch (err) {
+    log("Failed to post message to service worker", err);
+    g_port = undefined;
+    scheduleServiceWorkerReconnect();
   }
 }
 
@@ -186,5 +242,5 @@ function runContentScript() {
   }
 }
 
-g_port.onMessage.addListener(handleServiceWorkerMessage);
+connectToServiceWorker();
 runContentScript();

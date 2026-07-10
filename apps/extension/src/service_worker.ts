@@ -11,6 +11,8 @@ declare const self: ServiceWorkerGlobalScope;
 const tabsInfo: { [index: number]: TabInfo | undefined } = {};
 const serverUrl = process.env.SYNC_SERVER!;
 const pendingDisconnects: { [index: number]: ReturnType<typeof setTimeout> | undefined } = {};
+const pendingConnectionRequests: { [index: number]: boolean | undefined } = {};
+const pendingContentScriptInjections: { [index: number]: Promise<void> | undefined } = {};
 
 let popupPort: chrome.runtime.Port | undefined = undefined;
 
@@ -27,6 +29,7 @@ function handleContentScriptConnection(port: chrome.runtime.Port): void {
   if (existingInfo && existingInfo.socket && existingInfo.roomId) {
     existingInfo.port = port;
     existingInfo.sentConnectionRequest = false;
+    delete pendingConnectionRequests[tabId];
     getActionAPI().enable(tabId);
     return;
   }
@@ -38,7 +41,7 @@ function handleContentScriptConnection(port: chrome.runtime.Port): void {
   }
 
   const urlRoomId: string | null = getParameterByName(url, "rollTogetherRoom");
-  if (!_.isNil(urlRoomId)) {
+  if (pendingConnectionRequests[tabId] || !_.isNil(urlRoomId)) {
     sendConnectionRequestToContentScript(tabId);
   } else {
     getActionAPI().enable(tabId);
@@ -158,11 +161,19 @@ function sendUpdateToContentScript(
 function sendConnectionRequestToContentScript(tabId: number): void {
   const tabInfo = tabsInfo[tabId];
   log({ tabsInfo, tabInfo, tabId });
-  const port = tabInfo!.port!;
-  const tab = port.sender!.tab!;
 
-  if (tabInfo == undefined) {
-    log(`No tab info found for tab ${tabId}`);
+  if (!tabInfo?.port) {
+    pendingConnectionRequests[tabId] = true;
+    requestContentScriptConnection(tabId);
+    log(`No content script port found for tab ${tabId}; requested a reconnect`);
+    return;
+  }
+
+  const port = tabInfo.port;
+  const tab = port.sender?.tab;
+
+  if (!tab) {
+    log(`No sender tab found for tab ${tabId}`);
     return;
   }
 
@@ -171,6 +182,7 @@ function sendConnectionRequestToContentScript(tabId: number): void {
     return;
   }
   tabInfo.sentConnectionRequest = true;
+  delete pendingConnectionRequests[tabId];
 
   if (tabInfo.socket) {
     if (getParameterByName(tab.url!, "rollTogetherRoom") === tabInfo.roomId) {
@@ -185,6 +197,59 @@ function sendConnectionRequestToContentScript(tabId: number): void {
     type: MessageTypes.SW2CS_ROOM_CONNECTION,
   };
   port.postMessage(message);
+}
+
+function requestContentScriptConnection(tabId: number): void {
+  if (pendingContentScriptInjections[tabId]) {
+    return;
+  }
+
+  pendingContentScriptInjections[tabId] = injectContentScript(tabId).finally(
+    () => {
+      delete pendingContentScriptInjections[tabId];
+    }
+  );
+}
+
+function injectContentScript(tabId: number): Promise<void> {
+  return new Promise((resolve) => {
+    const scripting = extensionAPI.scripting;
+
+    if (scripting?.executeScript) {
+      scripting.executeScript(
+        {
+          target: { tabId, allFrames: true },
+          files: ["content_script.js"],
+        },
+        () => {
+          const error = extensionAPI.runtime.lastError;
+          if (error) {
+            log("Unable to inject content script", { tabId, error: error.message });
+          }
+          resolve();
+        }
+      );
+      return;
+    }
+
+    if (extensionAPI.tabs.executeScript) {
+      extensionAPI.tabs.executeScript(
+        tabId,
+        { file: "content_script.js", allFrames: true },
+        () => {
+          const error = extensionAPI.runtime.lastError;
+          if (error) {
+            log("Unable to inject content script", { tabId, error: error.message });
+          }
+          resolve();
+        }
+      );
+      return;
+    }
+
+    log("No content script injection API available", { tabId });
+    resolve();
+  });
 }
 
 function connectWebsocket(

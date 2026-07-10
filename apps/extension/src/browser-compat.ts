@@ -5,6 +5,7 @@ interface BrowserAPI {
   runtime: typeof chrome.runtime;
   storage: typeof chrome.storage;
   tabs: typeof chrome.tabs;
+  scripting?: typeof chrome.scripting;
   action?: typeof chrome.action;
   browserAction?: any; // For Manifest V2 compatibility
 }
