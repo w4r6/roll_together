@@ -1,7 +1,6 @@
 // @ts-check
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
-const { CleanWebpackPlugin } = require("clean-webpack-plugin");
 const webpack = require("webpack");
 
 // Environment variables
@@ -11,21 +10,32 @@ const webpack = require("webpack");
 const envVariables = require("./env.json");
 
 module.exports = (env) => {
-  console.log(env);
-
-  const isFirefox = env.firefox || false;
-  const manifestFile = isFirefox ? "manifest.firefox.json" : "manifest.json";
+  const isFirefox = Boolean(env.firefox);
+  const isProduction = Boolean(env.production);
   const outputDir = isFirefox ? "build-firefox" : "build";
+  const environment = isProduction ? "production" : "development";
+  const syncServer = envVariables[environment].SYNC_SERVER;
+  const baseManifest = require("./manifest.base.json");
+  const targetManifest = require(
+    isFirefox ? "./manifest.firefox.json" : "./manifest.chrome.json",
+  );
+  const manifest = {
+    ...baseManifest,
+    ...targetManifest,
+    host_permissions: [
+      ...baseManifest.host_permissions,
+      `${new URL(syncServer).origin}/*`,
+    ],
+  };
 
   /** @type {webpack.Configuration} */
   const config = {
-    mode: env.production ? "production" : "development",
+    mode: isProduction ? "production" : "development",
     entry: {
       service_worker: "./src/service_worker.ts",
       content_script: "./src/content_script.ts",
       popup: "./src/popup.ts",
       options: "./src/options.ts",
-      "browser-compat": "./src/browser-compat.ts",
     },
     module: {
       rules: [
@@ -42,29 +52,30 @@ module.exports = (env) => {
     output: {
       filename: "[name].js",
       path: path.resolve(__dirname, outputDir),
+      clean: true,
     },
-    optimization: { minimize: false },
-    devtool: env.production ? false : "inline-source-map",
+    optimization: { concatenateModules: false, minimize: isProduction },
+    devtool: isProduction ? false : "inline-source-map",
     plugins: [
-      // @ts-ignore
       new CopyPlugin({
         patterns: [
-          { from: manifestFile, to: "manifest.json" },
-          { from: "src/fonts", to: "fonts" },
+          {
+            from: "manifest.base.json",
+            to: "manifest.json",
+            transform: () => `${JSON.stringify(manifest, null, 2)}\n`,
+          },
           { from: "src/images", to: "images" },
           { from: "src/options.html" },
           { from: "src/popup.html" },
           { from: "src/styles.css" },
         ],
       }),
-      // @ts-ignore
-      new CleanWebpackPlugin(),
-      new webpack.EnvironmentPlugin(
-        env.production ? envVariables.production : envVariables.development
-      ),
+      new webpack.DefinePlugin({
+        "typeof self": JSON.stringify("object"),
+      }),
+      new webpack.EnvironmentPlugin({ SYNC_SERVER: syncServer }),
     ],
   };
 
-  // @ts-ignore
-  return (exports = config);
+  return config;
 };

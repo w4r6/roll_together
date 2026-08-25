@@ -1,20 +1,21 @@
-# Roll Together Backend
+# Roll Together backend
 
-Express and Socket.IO sync backend for the Roll Together browser extension.
+The backend keeps short-lived playback rooms in memory and relays validated playback updates over WebSocket-only Socket.IO connections.
 
 From the repository root:
 
 ```bash
-npm run build:backend
 npm run start:backend:dev
+npm run test -w roll_together_backend
+npm run build:backend
 ```
 
-## DigitalOcean App Platform
+## Runtime configuration
 
-This service is deployed from the monorepo root using `.do/app.yaml`.
+- `PORT` — listening port; defaults to `3000`
+- `NODE_ENV` — set to `production` in deployment
+- `ROLL_TOGETHER_ALLOWED_ORIGINS` — optional comma-separated exact origin allowlist
 
-- Build command: `npm ci && npm run build:backend`
-- Run command: `npm run start:prod -w roll_together_backend`
-- Health check: `/health`
+Rooms intentionally disappear when their last viewer leaves or the process restarts. The deployment therefore stays at one instance. A multi-instance deployment would require a shared Socket.IO adapter and room store.
 
-GitHub Actions deploys it with `.github/workflows/deploy-digitalocean.yml` when `DIGITALOCEAN_ACCESS_TOKEN` is configured.
+`GET /health` reports process health plus current connection and room counts. The server validates handshakes and playback updates, limits message size and update frequency, and shuts down cleanly on `SIGTERM` or `SIGINT`.

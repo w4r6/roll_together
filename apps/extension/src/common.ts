@@ -1,164 +1,126 @@
-import _, { get } from "lodash";
-import { Radius, StorageData } from "./types";
-import { extensionAPI } from "./browser-compat";
+import { normalizeUsername } from "@roll-together/protocol";
 
-declare const process: any;
+import { getActionApi, getSyncStorage, setSyncStorage } from "./extension-api";
+import type { StorageData } from "./types";
 
-const DEBUG: boolean = process.env.NODE_ENV === "development";
-const DISPLAY_DEBUG_TIME: boolean = false;
-const googleGreen: string = "#009688";
-const googleAquaBlue: string = "#00BBD3";
+declare const process: { env: { NODE_ENV?: string } };
 
-export const crunchyrollOrange: string = "#F78C25";
+const DEFAULT_COLOR = "#F78C25";
+export const SYNC_TOLERANCE_SECONDS = 2;
+export const ROOM_QUERY_PARAMETER = "rollTogetherRoom";
 
-export const LIMIT_DELTA_TIME: number = 3; // In Seconds
-const defaultColorOptions: string[] = [
-  googleGreen,
-  googleAquaBlue,
-  crunchyrollOrange,
+const USERNAME_ADJECTIVES = [
+  "Amber",
+  "Brave",
+  "Calm",
+  "Cosmic",
+  "Lucky",
+  "Mellow",
+  "Quiet",
+  "Swift",
 ];
+const USERNAME_NOUNS = [
+  "Badger",
+  "Crane",
+  "Fox",
+  "Moth",
+  "Otter",
+  "Panda",
+  "Raven",
+  "Tiger",
+];
+const DEBUG = process.env.NODE_ENV === "development";
 
-export function log(...args: any): void {
-  const date: Array<any> = DISPLAY_DEBUG_TIME ? [new Date().toJSON()] : [];
-  DEBUG && console.log(...date, ...args);
-  return;
+export function log(...values: unknown[]): void {
+  if (DEBUG) console.debug("[Roll Together]", ...values);
 }
 
-export function getParameterByName(
-  url: string,
-  name: string = "rollTogetherRoom"
-): string | null {
-  const queryString: string = /\?[^#]+(?=#|$)|$/.exec(url)![0];
-  const regex: RegExp = new RegExp("(?:[?&]|^)" + name + "=([^&#]*)");
-  const results: RegExpExecArray | null = regex.exec(queryString);
-
-  if (_.isNull(results) || results.length < 2) {
-    return null;
-  }
-
-  return decodeURIComponent(results[1].replace(/\+/g, " "));
-}
-
-export function updateQueryStringParameter(
-  uri: string,
-  key: string,
-  value: string
-): string {
-  const re: RegExp = new RegExp("([?&])" + key + "=.*?(&|$)", "i");
-  const separator: string = uri.indexOf("?") !== -1 ? "&" : "?";
-  if (uri.match(re)) {
-    return uri.replace(re, "$1" + key + "=" + value + "$2");
-  } else {
-    return uri + separator + key + "=" + value;
+export function getRoomIdFromUrl(url: string): string | undefined {
+  try {
+    return new URL(url).searchParams.get(ROOM_QUERY_PARAMETER) ?? undefined;
+  } catch {
+    return undefined;
   }
 }
 
-export function getExtensionColor(): Promise<string> {
-  return new Promise((resolve) => {
-    extensionAPI.storage.sync.get(
-      { extensionColor: crunchyrollOrange },
-      function (data: StorageData) {
-        resolve(data.extensionColor as string);
-      }
-    );
-  });
+export function addRoomIdToUrl(url: string, roomId: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set(ROOM_QUERY_PARAMETER, roomId);
+  return parsed.toString();
 }
 
-export function getColorMenu(): Promise<string[]> {
-  return new Promise((resolve) => {
-    extensionAPI.storage.sync.get(
-      { colorOptions: defaultColorOptions },
-      function (data: StorageData) {
-        resolve(data.colorOptions as string[]);
-      }
-    );
-  });
+export async function getOrCreateUsername(): Promise<string> {
+  const data = await getSyncStorage<StorageData>({});
+  const existing = normalizeUsername(data.username);
+  if (existing) return existing;
+
+  const username = generateUsername();
+  await setSyncStorage({ username });
+  return username;
 }
 
-/**
- * Gets typed keys of an enum. Useful for iterating over an enum.
- * @param obj The enum definition to get keys for.
- * @returns Array of keys for accessing the enum.
- */
-export function getEnumKeys<O extends object, K extends keyof O = keyof O>(
-  obj: O
-): K[] {
-  // This works because of how enums are defined at runtime.
-  // For string enums, the Object.keys component covers it as the runtime object only includes key to value mappings.
-  // For number enums, we filter out numeric keys as TypeScript maps both the values to keys and keys to values.
-  // For heterogeneous enums, both of the above rules apply.
-  return Object.keys(obj).filter((k) => Number.isNaN(+k)) as K[];
+export async function updateActionIcon(): Promise<void> {
+  const canvas = new OffscreenCanvas(128, 128);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Unable to create icon canvas context");
+
+  drawIcon(canvas, context, DEFAULT_COLOR);
+  getActionApi().setIcon({ imageData: context.getImageData(0, 0, 128, 128) });
 }
 
-export async function setIconColor(
-  canvas: OffscreenCanvas | HTMLCanvasElement,
-  ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
-  color: string | undefined = undefined
-) {
-  if (color == undefined) {
-    color = await getExtensionColor();
-  }
-
-  ctx.font = "bold 92px roboto";
-  ctx.textAlign = "center";
-  ctx.fillStyle = color;
-  roundRect(ctx, 0, 0, canvas.width, canvas.height, 20, true, false);
-  ctx.fillStyle = "white";
-  ctx.fillText("RT", canvas.width / 2, canvas.height / 2 + 32);
-
-  const imageData = ctx.getImageData(0, 0, 128, 128);
-  chrome.action.setIcon({
-    imageData,
-  });
-
-  log("Set Icon Color", { color });
+function generateUsername(): string {
+  const adjective =
+    USERNAME_ADJECTIVES[randomIndex(USERNAME_ADJECTIVES.length)];
+  const noun = USERNAME_NOUNS[randomIndex(USERNAME_NOUNS.length)];
+  const number = 10 + randomIndex(90);
+  return `${adjective} ${noun} ${number}`;
 }
 
-export function roundRect(
-  ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
+function randomIndex(length: number): number {
+  const random = new Uint32Array(1);
+  crypto.getRandomValues(random);
+  return (random[0] ?? 0) % length;
+}
+
+function drawIcon(
+  canvas: OffscreenCanvas,
+  context: OffscreenCanvasRenderingContext2D,
+  color: string,
+): void {
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = color;
+  roundedRectangle(context, 4, 4, 120, 120, 24);
+  context.fill();
+
+  context.fillStyle = "#FFFFFF";
+  context.font = "700 54px sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText("RT", 64, 68);
+}
+
+function roundedRectangle(
+  context: OffscreenCanvasRenderingContext2D,
   x: number,
   y: number,
   width: number,
   height: number,
-  radius: number | Radius | undefined,
-  fill: boolean,
-  stroke: boolean | undefined
+  radius: number,
 ): void {
-  if (typeof stroke === "undefined") {
-    stroke = true;
-  }
-  if (typeof radius === "undefined") {
-    radius = 5;
-  }
-  if (typeof radius === "number") {
-    radius = { tl: radius, tr: radius, br: radius, bl: radius };
-  } else {
-    const defaultRadius: Radius = { tl: 0, tr: 0, br: 0, bl: 0 };
-    for (let prop in defaultRadius) {
-      const side = prop as keyof Radius;
-      radius[side] = radius[side] || defaultRadius[side];
-    }
-  }
-  ctx.beginPath();
-  ctx.moveTo(x + radius.tl, y);
-  ctx.lineTo(x + width - radius.tr, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + radius.tr);
-  ctx.lineTo(x + width, y + height - radius.br);
-  ctx.quadraticCurveTo(
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(x + width - radius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + radius);
+  context.lineTo(x + width, y + height - radius);
+  context.quadraticCurveTo(
     x + width,
     y + height,
-    x + width - radius.br,
-    y + height
+    x + width - radius,
+    y + height,
   );
-  ctx.lineTo(x + radius.bl, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - radius.bl);
-  ctx.lineTo(x, y + radius.tl);
-  ctx.quadraticCurveTo(x, y, x + radius.tl, y);
-  ctx.closePath();
-  if (fill) {
-    ctx.fill();
-  }
-  if (stroke) {
-    ctx.stroke();
-  }
+  context.lineTo(x + radius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
 }

@@ -9,6 +9,7 @@ apps/extension/rolltogether-firefox.zip
 
 apps/backend/build/
 apps/backend/dist/
+packages/*/dist/
 
 logs/
 *.log

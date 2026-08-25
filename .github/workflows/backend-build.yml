@@ -1,37 +1,40 @@
 name: Build Backend
 
+permissions:
+  contents: read
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'apps/backend/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/backend-build.yml'
+      - "apps/backend/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/backend-build.yml"
   pull_request:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'apps/backend/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/backend-build.yml'
+      - "apps/backend/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/backend-build.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: package-lock.json
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Build backend
-      run: npm run build:backend
+      - name: Check backend
+        run: npm run build:protocol && npm run typecheck -w roll_together_backend && npm run test -w roll_together_backend

@@ -1,25 +1,44 @@
 {
   "name": "roll_together",
   "private": true,
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11"
+  },
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "build:extension": "npm run build -w roll_together_extension",
-    "build:backend": "npm run build -w roll_together_backend",
-    "build:chrome": "npm run build:chrome -w roll_together_extension",
-    "build:firefox": "npm run build:firefox -w roll_together_extension",
-    "build:production": "npm run build:production -w roll_together_extension",
-    "build:production:chrome": "npm run build:production:chrome -w roll_together_extension",
-    "build:production:firefox": "npm run build:production:firefox -w roll_together_extension",
-    "watch:chrome": "npm run watch:chrome -w roll_together_extension",
-    "watch:firefox": "npm run watch:firefox -w roll_together_extension",
+    "build": "npm run build:protocol && npm run build -w roll_together_backend && npm run build -w roll_together_extension",
+    "build:protocol": "npm run build -w @roll-together/protocol",
+    "build:extension": "npm run build:protocol && npm run build -w roll_together_extension",
+    "build:backend": "npm run build:protocol && npm run build -w roll_together_backend",
+    "build:chrome": "npm run build:protocol && npm run build:chrome -w roll_together_extension",
+    "build:firefox": "npm run build:protocol && npm run build:firefox -w roll_together_extension",
+    "build:production": "npm run build:protocol && npm run build:production -w roll_together_extension",
+    "build:production:chrome": "npm run build:protocol && npm run build:production:chrome -w roll_together_extension",
+    "build:production:firefox": "npm run build:protocol && npm run build:production:firefox -w roll_together_extension",
+    "watch:chrome": "npm run build:protocol && npm run watch:chrome -w roll_together_extension",
+    "watch:firefox": "npm run build:protocol && npm run watch:firefox -w roll_together_extension",
     "package:extension": "npm run package -w roll_together_extension",
     "package:chrome": "npm run package:chrome -w roll_together_extension",
     "package:firefox": "npm run package:firefox -w roll_together_extension",
     "start:backend": "npm run start -w roll_together_backend",
     "start:backend:prod": "npm run start:prod -w roll_together_backend",
-    "start:backend:dev": "npm run start:dev -w roll_together_backend"
+    "start:backend:dev": "npm run build:protocol && npm run start:dev -w roll_together_backend",
+    "typecheck": "npm run build:protocol && npm run typecheck -w roll_together_backend && npm run typecheck -w roll_together_extension",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run build:protocol && npm run test -w @roll-together/protocol && npm run test -w roll_together_backend",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build:production"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.0.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.0.0",
+    "typescript-eslint": "^8.0.0"
   }
 }

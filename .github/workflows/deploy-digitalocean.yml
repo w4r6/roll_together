@@ -2,13 +2,13 @@ name: Deploy Backend to DigitalOcean
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - '.do/app.yaml'
-      - 'apps/backend/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/deploy-digitalocean.yml'
+      - ".do/app.yaml"
+      - "apps/backend/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-digitalocean.yml"
   workflow_dispatch:
 
 jobs:
@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Deploy DigitalOcean App Platform app
-      uses: digitalocean/app_action/deploy@v2
-      with:
-        token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Deploy DigitalOcean App Platform app
+        uses: digitalocean/app_action/deploy@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}

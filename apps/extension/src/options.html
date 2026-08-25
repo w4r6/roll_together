@@ -1,24 +1,57 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Roll Together profile</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="options-body">
+    <main class="options-shell options-shell-compact">
+      <header class="options-header">
+        <span class="brand-mark brand-mark-large" aria-hidden="true">RT</span>
+        <div>
+          <p class="eyebrow">Your profile</p>
+          <h1>What should we call you?</h1>
+          <p class="supporting-copy">
+            This name appears beside you in every watch room.
+          </p>
+        </div>
+      </header>
 
-<head>
-  <link rel="stylesheet" type="text/css" href="styles.css">
-</head>
+      <section class="settings-card" aria-labelledby="profileTitle">
+        <div class="section-heading">
+          <div>
+            <h2 id="profileTitle">Username</h2>
+            <p>You can change it whenever you like.</p>
+          </div>
+        </div>
 
-<body class="optionsBody mt32">
-  <div class="optionsContainer">
-    <h1 class="mt32 mb16">Roll Together Options</h1>
-    <h2>Select a primary color for this extension</h2>
-    <div id="colorSelector" class="mb16"></div>
-    <input id="colorInput" type="text" value="">
-    <div class="optionsButtonContainer">
-      <button class="mt16 optionButton" id="addButton">Add Color</button>
-      <button class="mt16 optionButton" id="removeButton">Remove Color</button>
-    </div>
-    <p id="confirmationMessage" class="c-error"></p>
-  </div>
-  </div>
-</body>
-<script src="options.js"></script>
-
+        <form id="profileForm">
+          <label class="field-label" for="usernameInput">Room name</label>
+          <input
+            id="usernameInput"
+            class="username-input"
+            type="text"
+            maxlength="24"
+            autocomplete="nickname"
+            spellcheck="false"
+            required
+          />
+          <div class="button-row">
+            <button class="button button-primary" type="submit">
+              Save username
+            </button>
+          </div>
+        </form>
+        <p
+          id="profileStatus"
+          class="form-status"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
 </html>

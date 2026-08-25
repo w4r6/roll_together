@@ -1,190 +1,204 @@
-import _ from "lodash";
-
-import { LIMIT_DELTA_TIME, log, getEnumKeys } from "./common";
+import {
+  MAX_VIDEO_PROGRESS_SECONDS,
+  type PlaybackUpdate,
+  type RoomSnapshot,
+} from "@roll-together/protocol";
 
 import {
-  States,
-  Actions,
-  PlayerStateProp,
-  MessageTypes,
-  Message,
+  getRoomIdFromUrl,
+  log,
+  ROOM_QUERY_PARAMETER,
+  SYNC_TOLERANCE_SECONDS,
+} from "./common";
+import {
   PortName,
+  type BackgroundToContentMessage,
+  type ContentToBackgroundMessage,
 } from "./types";
-import { extensionAPI } from "./browser-compat";
 
-const g_port = extensionAPI.runtime.connect({ name: PortName.CONTENT_SCRIPT });
+type PlaybackEvent = "pause" | "play" | "seeked";
 
-const ignoreNext: { [index: string]: boolean } = {};
-let g_player: HTMLVideoElement | undefined = undefined;
-let g_lastFrameProgress: number | undefined = undefined;
-let g_heartBeatInterval: NodeJS.Timeout | undefined = undefined; // Keeps Service Worker alive while connected
-let g_pendingMessages: Message[] = [];
-let g_playPromise: Promise<void> | undefined = undefined;
+let port: chrome.runtime.Port | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectDelayMs = 250;
+let player: HTMLVideoElement | undefined;
+let joinedRoomId = getRoomIdFromUrl(window.location.href);
+const suppressedEvents = new Set<PlaybackEvent>();
+const playbackEvents: ReadonlyArray<PlaybackEvent> = [
+  "play",
+  "pause",
+  "seeked",
+];
 
-function getState(stateName: PlayerStateProp): boolean | number {
-  return g_player![stateName];
+const playerObserver = new MutationObserver(() => attachBestPlayer());
+playerObserver.observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+});
+
+connectPort();
+attachBestPlayer();
+
+function connectPort(): void {
+  if (port) return;
+
+  const nextPort = chrome.runtime.connect({ name: PortName.CONTENT });
+  port = nextPort;
+  reconnectDelayMs = 250;
+
+  nextPort.onMessage.addListener((value: unknown) => {
+    handleBackgroundMessage(value as BackgroundToContentMessage);
+  });
+  nextPort.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    if (port === nextPort) port = undefined;
+    scheduleReconnect();
+  });
+
+  announceReady();
 }
 
-function getStates(): {
-  state: States;
-  currentProgress: number;
-  timeJump: boolean;
-} {
-  const [paused, currentProgress]: [boolean, number] = [
-    getState("paused") as boolean,
-    getState("currentTime") as number,
-  ];
-
-  g_lastFrameProgress = g_lastFrameProgress || currentProgress;
-
-  const timeJump: boolean =
-    Math.abs(currentProgress - g_lastFrameProgress) > LIMIT_DELTA_TIME;
-  const state: States = paused ? States.PAUSED : States.PLAYING;
-
-  g_lastFrameProgress = currentProgress;
-  return { state, currentProgress, timeJump };
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    connectPort();
+  }, reconnectDelayMs);
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000);
 }
 
-const handleLocalAction = (action: Actions) => (): void => {
-  if (ignoreNext[action] === true) {
-    ignoreNext[action] = false;
-    return;
+function attachBestPlayer(): void {
+  if (player?.isConnected) return;
+
+  if (player) removePlayerListeners(player);
+  player = findBestPlayer();
+  if (!player) return;
+
+  for (const event of playbackEvents) {
+    player.addEventListener(event, handleLocalPlayback);
   }
+  announceReady();
+}
 
-  const {
-    state,
-    currentProgress,
-    timeJump,
-  }: { state: States; currentProgress: number; timeJump: boolean } =
-    getStates();
-  const type = MessageTypes.CS2SW_LOCAL_UPDATE;
+function findBestPlayer(): HTMLVideoElement | undefined {
+  const candidates = Array.from(document.querySelectorAll("video"));
+  return candidates.sort(
+    (left, right) =>
+      right.clientWidth * right.clientHeight -
+      left.clientWidth * left.clientHeight,
+  )[0];
+}
 
-  log("Local Action", action, { type, state, currentProgress, timeJump });
-  switch (action) {
-    case Actions.PLAY:
-    case Actions.PAUSE:
-      g_port.postMessage({ type, state, currentProgress });
-      break;
-    case Actions.TIME_UPDATE:
-      if (timeJump) {
-        g_port.postMessage({ type, state, currentProgress });
-      }
-      break;
-  }
-};
-
-function triggerAction(action: Actions, progress: number): void {
-  if (_.isNil(g_player)) {
-    log("Player is Undefined so no action will be triggered");
-    return;
-  }
-  ignoreNext[action] = true;
-
-  switch (action) {
-    case Actions.PAUSE:
-      if (g_playPromise) {
-        g_playPromise.then(() => {
-          g_player!.pause();
-          g_player!.currentTime = progress;
-        }).catch(_.noop);
-        g_playPromise = undefined;
-      } else {
-        g_player.pause();
-        g_player.currentTime = progress;
-      }
-      break;
-    case Actions.PLAY:
-      g_playPromise = g_player.play();
-      g_playPromise.catch(_.noop);
-      if (Math.abs(g_player.currentTime - progress) > LIMIT_DELTA_TIME) {
-        g_player.currentTime = progress;
-      }
-      break;
-    case Actions.TIME_UPDATE:
-      g_player.currentTime = progress;
-      break;
-    default:
-      ignoreNext[action] = false;
+function removePlayerListeners(video: HTMLVideoElement): void {
+  for (const event of playbackEvents) {
+    video.removeEventListener(event, handleLocalPlayback);
   }
 }
 
-function sendRoomConnectionMessage(): void {
-  const { state, currentProgress }: { state: States; currentProgress: number } =
-    getStates();
-  const type = MessageTypes.CS2SW_ROOM_CONNECTION;
-  g_port.postMessage({ state, currentProgress, type });
+function handleLocalPlayback(event: Event): void {
+  const eventName = event.type as PlaybackEvent;
+  if (suppressedEvents.delete(eventName)) return;
+
+  const playback = currentPlayback();
+  if (playback) postMessage({ type: "playback:update", playback });
 }
 
-function handleRemoteUpdate(message: Message): void {
-  if (message.type != MessageTypes.SW2CS_REMOTE_UPDATE) {
-    throw "Invalid Message Type: " + message.type;
-  }
-  const { roomState, roomProgress } = message;
-  log("Handling Remote Update", { roomState, roomProgress });
-
-  const { state, currentProgress }: { state: States; currentProgress: number } =
-    getStates();
-  if (state !== roomState) {
-    if (roomState === States.PAUSED) triggerAction(Actions.PAUSE, roomProgress);
-    if (roomState === States.PLAYING) triggerAction(Actions.PLAY, roomProgress);
-  }
-
-  if (Math.abs(roomProgress - currentProgress) > LIMIT_DELTA_TIME) {
-    triggerAction(Actions.TIME_UPDATE, roomProgress);
-  }
+function announceReady(): void {
+  const playback = currentPlayback();
+  if (!playback) return;
+  postMessage(
+    joinedRoomId
+      ? { type: "content:ready", playback, roomId: joinedRoomId }
+      : { type: "content:ready", playback },
+  );
 }
 
-function handleServiceWorkerMessage(serviceWorkerMessage: Message) {
-  if (!g_player) {
-    log("Player not ready, queuing message", serviceWorkerMessage);
-    g_pendingMessages.push(serviceWorkerMessage);
-    return;
-  }
-
-  log("Received message from Background", serviceWorkerMessage);
-
-  switch (serviceWorkerMessage.type) {
-    case MessageTypes.SW2CS_ROOM_CONNECTION:
-      g_heartBeatInterval = setInterval(
-        () => g_port.postMessage({ type: MessageTypes.CS2SW_HEART_BEAT }),
-        20000
-      );
-      sendRoomConnectionMessage();
-      break;
-    case MessageTypes.SW2CS_REMOTE_UPDATE:
-      handleRemoteUpdate(serviceWorkerMessage);
-      break;
-    case MessageTypes.SW2CS_ROOM_DISCONNECT:
-      if (g_heartBeatInterval) {
-        clearInterval(g_heartBeatInterval);
-      }
-      break;
-    default:
-      throw "Invalid BackgroundMessageType: " + serviceWorkerMessage.type;
-  }
-}
-
-function runContentScript() {
-  g_player = (document.getElementById("player0") || document.getElementById("bitmovinplayer-video-null")) as HTMLVideoElement;
-
-  if (!g_player) {
-    setTimeout(runContentScript, 500);
-    return;
-  }
-
-  for (const action of getEnumKeys(Actions)) {
-    g_player.addEventListener(
-      Actions[action],
-      handleLocalAction(Actions[action])
+function handleBackgroundMessage(message: BackgroundToContentMessage): void {
+  if (message.type === "room:connect-request") {
+    const playback = currentPlayback();
+    if (!playback) return;
+    postMessage(
+      message.roomId
+        ? { type: "room:connect", playback, roomId: message.roomId }
+        : { type: "room:connect", playback },
     );
+    return;
   }
 
-  // Replay any messages that arrived before the player was ready
-  const pending = g_pendingMessages.splice(0);
-  for (const msg of pending) {
-    handleServiceWorkerMessage(msg);
+  if (message.type === "room:snapshot") {
+    joinedRoomId = message.snapshot.roomId;
+    void applySnapshot(message.snapshot);
+    return;
+  }
+
+  if (message.type === "room:disconnected") {
+    joinedRoomId = undefined;
+    suppressedEvents.clear();
+    removeRoomIdFromAddressBar();
+    return;
+  }
+
+  if (message.type === "room:error") log(message.message);
+}
+
+async function applySnapshot(snapshot: RoomSnapshot): Promise<void> {
+  if (!player) return;
+
+  if (
+    Math.abs(player.currentTime - snapshot.progress) > SYNC_TOLERANCE_SECONDS
+  ) {
+    suppressedEvents.add("seeked");
+    try {
+      player.currentTime = snapshot.progress;
+    } catch (error: unknown) {
+      suppressedEvents.delete("seeked");
+      log("Could not seek video", error);
+    }
+  }
+
+  if (snapshot.state === "paused" && !player.paused) {
+    suppressedEvents.add("pause");
+    player.pause();
+    return;
+  }
+
+  if (snapshot.state === "playing" && player.paused) {
+    suppressedEvents.add("play");
+    try {
+      await player.play();
+    } catch (error: unknown) {
+      suppressedEvents.delete("play");
+      log("Browser blocked synchronized playback", error);
+    }
   }
 }
 
-g_port.onMessage.addListener(handleServiceWorkerMessage);
-runContentScript();
+function currentPlayback(): PlaybackUpdate | undefined {
+  if (!player) return undefined;
+  const progress = Number.isFinite(player.currentTime)
+    ? Math.min(Math.max(player.currentTime, 0), MAX_VIDEO_PROGRESS_SECONDS)
+    : 0;
+  return { state: player.paused ? "paused" : "playing", progress };
+}
+
+function postMessage(message: ContentToBackgroundMessage): void {
+  if (!port) return;
+  try {
+    port.postMessage(message);
+  } catch (error: unknown) {
+    log("Could not reach service worker", error);
+    port = undefined;
+    scheduleReconnect();
+  }
+}
+
+function removeRoomIdFromAddressBar(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(ROOM_QUERY_PARAMETER)) return;
+    url.searchParams.delete(ROOM_QUERY_PARAMETER);
+    window.history.replaceState(window.history.state, "", url.toString());
+  } catch (error: unknown) {
+    log("Could not remove room from URL", error);
+  }
+}
