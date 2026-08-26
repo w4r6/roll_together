@@ -1,4 +1,4 @@
-import { normalizeUsername } from "@roll-together/protocol";
+import { normalizeUsername, parseEpisodePath } from "@roll-together/protocol";
 
 import { getActionApi, getSyncStorage, setSyncStorage } from "./extension-api";
 import type { StorageData } from "./types";
@@ -6,8 +6,9 @@ import type { StorageData } from "./types";
 declare const process: { env: { NODE_ENV?: string } };
 
 const DEFAULT_COLOR = "#F78C25";
-export const SYNC_TOLERANCE_SECONDS = 2;
+export const SYNC_TOLERANCE_SECONDS = 0.25;
 export const ROOM_QUERY_PARAMETER = "rollTogetherRoom";
+const CRUNCHYROLL_ORIGIN = "https://www.crunchyroll.com";
 
 const USERNAME_ADJECTIVES = [
   "Amber",
@@ -47,6 +48,24 @@ export function addRoomIdToUrl(url: string, roomId: string): string {
   const parsed = new URL(url);
   parsed.searchParams.set(ROOM_QUERY_PARAMETER, roomId);
   return parsed.toString();
+}
+
+export function getEpisodePathFromUrl(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "www.crunchyroll.com") return undefined;
+    parsed.searchParams.delete(ROOM_QUERY_PARAMETER);
+    return parseEpisodePath(`${parsed.pathname}${parsed.search}`) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getRoomEpisodeUrl(episodePath: string, roomId: string): string {
+  return addRoomIdToUrl(
+    new URL(episodePath, CRUNCHYROLL_ORIGIN).toString(),
+    roomId,
+  );
 }
 
 export async function getOrCreateUsername(): Promise<string> {

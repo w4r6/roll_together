@@ -3,6 +3,7 @@ export const V2_SOCKET_PATH = "/v2/socket.io";
 export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{20,64}$/;
 export const MAX_VIDEO_PROGRESS_SECONDS = 7 * 24 * 60 * 60;
 export const MAX_USERNAME_LENGTH = 24;
+export const MAX_EPISODE_PATH_LENGTH = 2_048;
 
 export type PlaybackState = "playing" | "paused";
 
@@ -15,6 +16,7 @@ export interface JoinRequest extends PlaybackUpdate {
   protocolVersion: typeof PROTOCOL_VERSION;
   username: string;
   roomId?: string;
+  episodePath?: string;
 }
 
 export interface RoomMember {
@@ -24,6 +26,7 @@ export interface RoomMember {
 
 export interface RoomSnapshot extends PlaybackUpdate {
   roomId: string;
+  episodePath?: string;
   revision: number;
   members: RoomMember[];
 }
@@ -41,6 +44,7 @@ export interface ServerToClientEvents {
 
 export interface ClientToServerEvents {
   "playback:update": (update: PlaybackUpdate) => void;
+  "episode:update": (episodePath: string) => void;
   "profile:update": (username: string) => void;
 }
 
@@ -59,6 +63,42 @@ export function isValidProgress(value: unknown): value is number {
 
 export function isValidRoomId(value: unknown): value is string {
   return typeof value === "string" && ROOM_ID_PATTERN.test(value);
+}
+
+export function parseEpisodePath(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > MAX_EPISODE_PATH_LENGTH ||
+    value.includes("#")
+  ) {
+    return null;
+  }
+
+  try {
+    const baseUrl = new URL("https://www.crunchyroll.com");
+    const episodeUrl = new URL(value, baseUrl);
+    if (episodeUrl.origin !== baseUrl.origin) return null;
+    if (`${episodeUrl.pathname}${episodeUrl.search}` !== value) return null;
+
+    const pathSegments = episodeUrl.pathname.split("/").filter(Boolean);
+    const watchSegmentIndex = pathSegments.findIndex(
+      (segment) => segment.toLowerCase() === "watch",
+    );
+    if (watchSegmentIndex < 0 || watchSegmentIndex > 1) return null;
+    if (
+      watchSegmentIndex === 1 &&
+      !/^[a-z]{2}(?:-[a-z]{2})?$/i.test(pathSegments[0] ?? "")
+    ) {
+      return null;
+    }
+
+    const episodeId = pathSegments[watchSegmentIndex + 1];
+    if (!episodeId || !/^[A-Za-z0-9]+$/.test(episodeId)) return null;
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeUsername(value: unknown): string | null {
@@ -100,14 +140,20 @@ export function parseJoinRequest(value: unknown): JoinRequest | null {
     return null;
   }
 
-  return value.roomId === undefined
-    ? { ...playback, protocolVersion: PROTOCOL_VERSION, username }
-    : {
-        ...playback,
-        protocolVersion: PROTOCOL_VERSION,
-        username,
-        roomId: value.roomId,
-      };
+  let episodePath: string | undefined;
+  if (value.episodePath !== undefined) {
+    const parsedEpisodePath = parseEpisodePath(value.episodePath);
+    if (!parsedEpisodePath) return null;
+    episodePath = parsedEpisodePath;
+  }
+
+  return {
+    ...playback,
+    protocolVersion: PROTOCOL_VERSION,
+    username,
+    ...(value.roomId === undefined ? {} : { roomId: value.roomId }),
+    ...(episodePath === undefined ? {} : { episodePath }),
+  };
 }
 
 export function isRoomSnapshot(value: unknown): value is RoomSnapshot {
@@ -120,6 +166,8 @@ export function isRoomSnapshot(value: unknown): value is RoomSnapshot {
   }
   return (
     isValidRoomId(value.roomId) &&
+    (value.episodePath === undefined ||
+      parseEpisodePath(value.episodePath) === value.episodePath) &&
     Number.isSafeInteger(value.revision) &&
     (value.revision as number) >= 0 &&
     parsePlaybackUpdate(value) !== null

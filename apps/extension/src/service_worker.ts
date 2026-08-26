@@ -1,4 +1,5 @@
 import {
+  MAX_VIDEO_PROGRESS_SECONDS,
   PROTOCOL_VERSION,
   V2_SOCKET_PATH,
   isRoomSnapshot,
@@ -12,7 +13,13 @@ import {
 import { io, type Socket } from "socket.io-client";
 
 import { getActionApi } from "./extension-api";
-import { getOrCreateUsername, log, updateActionIcon } from "./common";
+import {
+  getEpisodePathFromUrl,
+  getOrCreateUsername,
+  getRoomEpisodeUrl,
+  log,
+  updateActionIcon,
+} from "./common";
 import {
   PortName,
   type BackgroundToContentMessage,
@@ -33,9 +40,14 @@ interface TabSession {
   socket?: SyncSocket;
   roomId?: string;
   lastSnapshot?: RoomSnapshot;
+  lastSnapshotReceivedAtMs: number;
   latestRevision: number;
   connectionAttempt: number;
   status: ConnectionStatus;
+  episodePath: string | undefined;
+  pendingLocalEpisodePath: string | undefined;
+  awaitingLocalPlaybackPath: string | undefined;
+  navigatingToEpisodePath: string | undefined;
 }
 
 const serverUrl = process.env.SYNC_SERVER;
@@ -82,6 +94,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => removeSession(tabId));
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) handleTabUrlUpdate(tabId, changeInfo.url);
+});
 
 function connectPopup(port: chrome.runtime.Port): void {
   popupPort = port;
@@ -136,29 +151,46 @@ function handleContentMessage(
   if (message.type === "content:ready") {
     const existing = sessions.get(tabId);
     const frameId = port.sender?.frameId ?? 0;
-    const session: TabSession = existing
-      ? { ...existing, port, frameId }
-      : {
-          tabId,
-          frameId,
-          port,
-          latestRevision: -1,
-          connectionAttempt: 0,
-          status: { state: "disconnected" },
-        };
+    const episodePath = getEpisodePathFromUrl(port.sender?.tab?.url ?? "");
+    const session: TabSession = existing ?? {
+      tabId,
+      frameId,
+      port,
+      latestRevision: -1,
+      connectionAttempt: 0,
+      status: { state: "disconnected" },
+      lastSnapshotReceivedAtMs: 0,
+      episodePath,
+      pendingLocalEpisodePath: undefined,
+      awaitingLocalPlaybackPath: undefined,
+      navigatingToEpisodePath: undefined,
+    };
+    session.port = port;
+    session.frameId = frameId;
+    session.episodePath = episodePath;
 
     sessions.set(tabId, session);
     getActionApi().enable(tabId);
+    if (session.navigatingToEpisodePath === episodePath) {
+      session.navigatingToEpisodePath = undefined;
+    }
 
-    if (session.lastSnapshot) {
+    const currentSnapshot = snapshotAtCurrentTime(session);
+    if (currentSnapshot) {
       postToContent(session, {
         type: "room:snapshot",
-        snapshot: session.lastSnapshot,
+        snapshot: currentSnapshot,
       });
     }
 
     if (message.roomId && message.roomId !== session.roomId) {
       void connectRoom(session, message.playback, message.roomId);
+    } else if (
+      session.awaitingLocalPlaybackPath === episodePath &&
+      session.socket?.connected
+    ) {
+      session.awaitingLocalPlaybackPath = undefined;
+      session.socket.emit("playback:update", message.playback);
     }
     return;
   }
@@ -217,9 +249,13 @@ async function connectRoom(
   }
   if (session.connectionAttempt !== connectionAttempt) return;
 
-  const joinRequest: JoinRequest = roomId
-    ? { ...playback, protocolVersion: PROTOCOL_VERSION, username, roomId }
-    : { ...playback, protocolVersion: PROTOCOL_VERSION, username };
+  const joinRequest: JoinRequest = {
+    ...playback,
+    protocolVersion: PROTOCOL_VERSION,
+    username,
+    ...(roomId ? { roomId } : {}),
+    ...(session.episodePath ? { episodePath: session.episodePath } : {}),
+  };
 
   const socket: SyncSocket = io(serverUrl, {
     // Extension v1 owns Socket.IO's default /socket.io path during rollout.
@@ -236,7 +272,11 @@ async function connectRoom(
   if (roomId) session.roomId = roomId;
   else delete session.roomId;
   delete session.lastSnapshot;
+  session.lastSnapshotReceivedAtMs = 0;
   session.latestRevision = -1;
+  session.pendingLocalEpisodePath = undefined;
+  session.awaitingLocalPlaybackPath = undefined;
+  session.navigatingToEpisodePath = undefined;
   socket.on("room:joined", (snapshot) =>
     receiveSnapshot(session, socket, snapshot, false),
   );
@@ -295,6 +335,10 @@ function receiveSnapshot(
   session.latestRevision = value.revision;
   session.roomId = value.roomId;
   session.lastSnapshot = value;
+  session.lastSnapshotReceivedAtMs = Date.now();
+  if (value.episodePath === session.pendingLocalEpisodePath) {
+    session.pendingLocalEpisodePath = undefined;
+  }
   session.status = {
     state: "connected",
     roomId: value.roomId,
@@ -303,7 +347,18 @@ function receiveSnapshot(
       isSelf: member.id === socket.id,
     })),
   };
-  postToContent(session, { type: "room:snapshot", snapshot: value });
+  if (
+    value.episodePath &&
+    value.episodePath !== session.episodePath &&
+    session.pendingLocalEpisodePath !== session.episodePath
+  ) {
+    navigateToRoomEpisode(session, value.episodePath, value.roomId);
+  } else {
+    postToContent(session, {
+      type: "room:snapshot",
+      snapshot: snapshotAtCurrentTime(session) ?? value,
+    });
+  }
   for (const member of joinedMembers) {
     postToContent(session, {
       type: "room:member-joined",
@@ -330,7 +385,11 @@ function disconnectRoom(tabId: number): void {
   disconnectSocket(session);
   delete session.roomId;
   delete session.lastSnapshot;
+  session.lastSnapshotReceivedAtMs = 0;
   session.latestRevision = -1;
+  session.pendingLocalEpisodePath = undefined;
+  session.awaitingLocalPlaybackPath = undefined;
+  session.navigatingToEpisodePath = undefined;
   session.status = { state: "disconnected" };
   postToContent(session, { type: "room:disconnected" });
   updatePopupForSession(session);
@@ -399,6 +458,66 @@ function postToContent(
   } catch (error: unknown) {
     log("Content script was unavailable", error);
   }
+}
+
+function snapshotAtCurrentTime(session: TabSession): RoomSnapshot | undefined {
+  const snapshot = session.lastSnapshot;
+  if (!snapshot || snapshot.state !== "playing") return snapshot;
+
+  const elapsedSeconds = Math.max(
+    0,
+    (Date.now() - session.lastSnapshotReceivedAtMs) / 1_000,
+  );
+  return {
+    ...snapshot,
+    progress: Math.min(
+      snapshot.progress + elapsedSeconds,
+      MAX_VIDEO_PROGRESS_SECONDS,
+    ),
+  };
+}
+
+function handleTabUrlUpdate(tabId: number, url: string): void {
+  const session = sessions.get(tabId);
+  if (!session) return;
+
+  const episodePath = getEpisodePathFromUrl(url);
+  if (!episodePath) return;
+
+  session.episodePath = episodePath;
+  if (session.navigatingToEpisodePath === episodePath) {
+    session.navigatingToEpisodePath = undefined;
+    return;
+  }
+
+  if (
+    !session.socket?.connected ||
+    !session.lastSnapshot ||
+    session.lastSnapshot.episodePath === episodePath
+  ) {
+    return;
+  }
+
+  session.pendingLocalEpisodePath = episodePath;
+  session.awaitingLocalPlaybackPath = episodePath;
+  session.socket.emit("episode:update", episodePath);
+}
+
+function navigateToRoomEpisode(
+  session: TabSession,
+  episodePath: string,
+  roomId: string,
+): void {
+  session.navigatingToEpisodePath = episodePath;
+  const url = getRoomEpisodeUrl(episodePath, roomId);
+  chrome.tabs.update(session.tabId, { url }, () => {
+    const error = chrome.runtime.lastError;
+    if (!error) return;
+    if (session.navigatingToEpisodePath === episodePath) {
+      session.navigatingToEpisodePath = undefined;
+    }
+    log("Could not open synchronized episode", error.message);
+  });
 }
 
 function friendlyConnectionError(message: string): string {

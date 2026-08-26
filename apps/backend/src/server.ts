@@ -8,6 +8,7 @@ import {
   MAX_VIDEO_PROGRESS_SECONDS,
   V2_SOCKET_PATH,
   normalizeUsername,
+  parseEpisodePath,
   parseJoinRequest,
   parsePlaybackUpdate,
   type ClientToServerEvents,
@@ -26,6 +27,7 @@ import { attachLegacyV1Server, type LegacyV1Server } from "./legacy-v1.js";
 interface Room {
   state: PlaybackState;
   progress: number;
+  episodePath: string | undefined;
   updatedAtMs: number;
   revision: number;
   members: Map<string, string>;
@@ -85,6 +87,7 @@ export class InMemoryRoomStore {
       room = {
         state: request.state,
         progress: request.progress,
+        episodePath: request.episodePath,
         updatedAtMs: this.now(),
         revision: 0,
         members: new Map<string, string>(),
@@ -104,6 +107,19 @@ export class InMemoryRoomStore {
 
     room.state = update.state;
     room.progress = update.progress;
+    room.updatedAtMs = this.now();
+    room.revision += 1;
+    return this.#snapshot(roomId, room);
+  }
+
+  updateEpisode(roomId: string, episodePath: string): RoomSnapshot | null {
+    const room = this.#rooms.get(roomId);
+    if (!room) return null;
+    if (room.episodePath === episodePath) return this.#snapshot(roomId, room);
+
+    room.episodePath = episodePath;
+    room.state = "paused";
+    room.progress = 0;
     room.updatedAtMs = this.now();
     room.revision += 1;
     return this.#snapshot(roomId, room);
@@ -152,6 +168,9 @@ export class InMemoryRoomStore {
       room.state === "playing" ? (this.now() - room.updatedAtMs) / 1_000 : 0;
     return {
       roomId,
+      ...(room.episodePath === undefined
+        ? {}
+        : { episodePath: room.episodePath }),
       state: room.state,
       progress: Math.min(
         room.progress + Math.max(0, elapsedSeconds),
@@ -283,6 +302,31 @@ export function createRollTogetherServer(
       }
 
       const nextSnapshot = rooms.update(roomId, update);
+      if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
+    });
+
+    socket.on("episode:update", (value: string) => {
+      if (!withinRateLimit(socket.data, maxUpdatesPerSecond)) {
+        const error: ProtocolError = {
+          code: "rate_limited",
+          message: "Too many room updates",
+        };
+        socket.emit("room:error", error);
+        return;
+      }
+
+      const episodePath = parseEpisodePath(value);
+      const roomId = socket.data.roomId;
+      if (!episodePath || !roomId) {
+        const error: ProtocolError = {
+          code: "invalid_request",
+          message: "Invalid episode update",
+        };
+        socket.emit("room:error", error);
+        return;
+      }
+
+      const nextSnapshot = rooms.updateEpisode(roomId, episodePath);
       if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
     });
 

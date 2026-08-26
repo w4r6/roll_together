@@ -68,6 +68,43 @@ test("broadcasts validated playback updates", async () => {
   assert.ok(update.progress >= 15);
 });
 
+test("broadcasts episode changes and resets playback", async () => {
+  const host = connect({
+    state: "playing",
+    progress: 1_200,
+    episodePath: "/watch/GN7U11111/episode-one",
+  });
+  const hostSnapshot = await once(host, "room:joined");
+  const guest = connect({
+    roomId: hostSnapshot.roomId,
+    state: "paused",
+    progress: 0,
+    username: "Guest",
+    episodePath: "/watch/GN7U11111/episode-one",
+  });
+  await once(guest, "room:joined");
+
+  const updatePromise = once(guest, "room:updated");
+  host.emit("episode:update", "/watch/GN7U22222/episode-two?lang=en");
+  const update = await updatePromise;
+
+  assert.equal(update.episodePath, "/watch/GN7U22222/episode-two?lang=en");
+  assert.equal(update.state, "paused");
+  assert.equal(update.progress, 0);
+  assert.equal(update.revision, 2);
+});
+
+test("rejects episode updates outside Crunchyroll watch routes", async () => {
+  const host = connect({ state: "paused", progress: 0 });
+  await once(host, "room:joined");
+
+  const errorPromise = once(host, "room:error");
+  host.emit("episode:update", "https://example.com/watch/GN7U22222");
+  const error = await errorPromise;
+
+  assert.equal(error.code, "invalid_request");
+});
+
 test("broadcasts username changes and departures", async () => {
   const host = connect({ state: "paused", progress: 0 });
   const hostSnapshot = await once(host, "room:joined");
