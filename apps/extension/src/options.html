@@ -2,55 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Roll Together profile</title>
+    <title>Roll Together Options</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body class="options-body">
-    <main class="options-shell options-shell-compact">
-      <header class="options-header">
-        <span class="brand-mark brand-mark-large" aria-hidden="true">RT</span>
-        <div>
-          <p class="eyebrow">Your profile</p>
-          <h1>What should we call you?</h1>
-          <p class="supporting-copy">
-            This name appears beside you in every watch room.
-          </p>
-        </div>
-      </header>
+  <body class="optionsBody">
+    <main class="optionsContainer">
+      <h1>Roll Together Options</h1>
 
-      <section class="settings-card" aria-labelledby="profileTitle">
-        <div class="section-heading">
-          <div>
-            <h2 id="profileTitle">Username</h2>
-            <p>You can change it whenever you like.</p>
-          </div>
+      <form id="profileForm" class="field">
+        <label class="fieldLabel" for="usernameInput">Username</label>
+        <p class="fieldHint">
+          This is the name other people see in the rooms you join.
+        </p>
+        <input
+          id="usernameInput"
+          class="textInput"
+          type="text"
+          maxlength="24"
+          autocomplete="nickname"
+          spellcheck="false"
+          required
+        />
+        <div class="buttonRow">
+          <button class="button buttonPrimary" type="submit">Save</button>
         </div>
+      </form>
 
-        <form id="profileForm">
-          <label class="field-label" for="usernameInput">Room name</label>
-          <input
-            id="usernameInput"
-            class="username-input"
-            type="text"
-            maxlength="24"
-            autocomplete="nickname"
-            spellcheck="false"
-            required
-          />
-          <div class="button-row">
-            <button class="button button-primary" type="submit">
-              Save username
-            </button>
-          </div>
-        </form>
-        <p
-          id="profileStatus"
-          class="form-status"
-          role="status"
-          aria-live="polite"
-        ></p>
-      </section>
+      <p
+        id="profileStatus"
+        class="formStatus"
+        role="status"
+        aria-live="polite"
+      ></p>
     </main>
     <script src="options.js"></script>
   </body>

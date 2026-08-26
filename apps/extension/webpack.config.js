@@ -64,6 +64,7 @@ module.exports = (env) => {
             to: "manifest.json",
             transform: () => `${JSON.stringify(manifest, null, 2)}\n`,
           },
+          { from: "src/fonts", to: "fonts" },
           { from: "src/images", to: "images" },
           { from: "src/options.html" },
           { from: "src/popup.html" },

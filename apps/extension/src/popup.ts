@@ -18,6 +18,7 @@ const copyUrlButton = button("copyUrl");
 const disconnectButton = button("disconnect");
 const retryButton = button("retry");
 const openOptionsButton = button("openOptions");
+const inviteUrlInput = input("inviteUrl");
 const memberCount = element("memberCount");
 const memberList = element("memberList");
 
@@ -41,12 +42,14 @@ copyUrlButton.addEventListener("click", async () => {
     await navigator.clipboard.writeText(inviteUrl);
     liveStatus.textContent = "Invite link copied.";
     copyUrlButton.textContent = "Copied";
-    setTimeout(() => (copyUrlButton.textContent = "Copy invite link"), 1_500);
+    setTimeout(() => (copyUrlButton.textContent = "Copy URL"), 1_500);
   } catch (error: unknown) {
     liveStatus.textContent = "Could not copy the invite link.";
     log("Clipboard write failed", error);
   }
 });
+
+inviteUrlInput.addEventListener("focus", () => inviteUrlInput.select());
 
 disconnectButton.addEventListener("click", () => {
   if (activeTab?.id === undefined) return;
@@ -100,6 +103,7 @@ function render(status: ConnectionStatus): void {
       return;
     }
     inviteUrl = addRoomIdToUrl(activeTab.url, status.roomId);
+    inviteUrlInput.value = inviteUrl;
     renderMembers(status.members);
     liveStatus.textContent = "Connected and ready to watch together.";
     showPanel(connectedPanel);
@@ -125,24 +129,16 @@ function renderMembers(
 
   for (const member of members) {
     const item = document.createElement("li");
-    item.className = "member-row";
+    item.className = "memberRow";
+    item.textContent = member.username;
 
-    const avatar = document.createElement("span");
-    avatar.className = "member-avatar";
-    avatar.setAttribute("aria-hidden", "true");
-    avatar.textContent = member.username.charAt(0).toUpperCase();
-
-    const name = document.createElement("span");
-    name.className = "member-name";
-    name.textContent = member.username;
     if (member.isSelf) {
       const selfLabel = document.createElement("span");
-      selfLabel.className = "self-label";
-      selfLabel.textContent = " (me)";
-      name.appendChild(selfLabel);
+      selfLabel.className = "selfLabel";
+      selfLabel.textContent = " (you)";
+      item.appendChild(selfLabel);
     }
 
-    item.append(avatar, name);
     memberList.appendChild(item);
   }
 }
@@ -172,5 +168,12 @@ function button(id: string): HTMLButtonElement {
   const value = element(id);
   if (!(value instanceof HTMLButtonElement))
     throw new Error(`#${id} is not a button`);
+  return value;
+}
+
+function input(id: string): HTMLInputElement {
+  const value = element(id);
+  if (!(value instanceof HTMLInputElement))
+    throw new Error(`#${id} is not an input`);
   return value;
 }
