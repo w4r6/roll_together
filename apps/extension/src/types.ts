@@ -23,6 +23,7 @@ export type ContentToBackgroundMessage =
 export type BackgroundToContentMessage =
   | { type: "room:connect-request"; roomId?: string }
   | { type: "room:snapshot"; snapshot: RoomSnapshot }
+  | { type: "room:member-joined"; username: string }
   | { type: "room:disconnected" }
   | { type: "room:error"; message: string };
 

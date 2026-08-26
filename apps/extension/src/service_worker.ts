@@ -238,10 +238,10 @@ async function connectRoom(
   delete session.lastSnapshot;
   session.latestRevision = -1;
   socket.on("room:joined", (snapshot) =>
-    receiveSnapshot(session, socket, snapshot),
+    receiveSnapshot(session, socket, snapshot, false),
   );
   socket.on("room:updated", (snapshot) =>
-    receiveSnapshot(session, socket, snapshot),
+    receiveSnapshot(session, socket, snapshot, true),
   );
   socket.on("room:error", (error) => {
     if (session.socket !== socket) return;
@@ -272,9 +272,20 @@ function receiveSnapshot(
   session: TabSession,
   socket: SyncSocket,
   value: unknown,
+  notifyAboutNewMembers: boolean,
 ): void {
   if (session.socket !== socket || !isRoomSnapshot(value)) return;
   if (value.revision < session.latestRevision) return;
+
+  const previousMemberIds = new Set(
+    session.lastSnapshot?.members.map((member) => member.id) ?? [],
+  );
+  const joinedMembers = notifyAboutNewMembers
+    ? value.members.filter(
+        (member) =>
+          member.id !== socket.id && !previousMemberIds.has(member.id),
+      )
+    : [];
 
   session.latestRevision = value.revision;
   session.roomId = value.roomId;
@@ -288,6 +299,12 @@ function receiveSnapshot(
     })),
   };
   postToContent(session, { type: "room:snapshot", snapshot: value });
+  for (const member of joinedMembers) {
+    postToContent(session, {
+      type: "room:member-joined",
+      username: member.username,
+    });
+  }
   updatePopupForSession(session);
 }
 
