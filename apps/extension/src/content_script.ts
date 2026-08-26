@@ -17,6 +17,7 @@ import {
 } from "./types";
 
 type PlaybackEvent = "pause" | "play" | "seeked";
+type MembershipEvent = "joined" | "left";
 
 const JOIN_NOTIFICATION_DURATION_MS = 4_500;
 
@@ -25,7 +26,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelayMs = 250;
 let player: HTMLVideoElement | undefined;
 let joinedRoomId = getRoomIdFromUrl(window.location.href);
-let joinAudioContext: AudioContext | undefined;
+let notificationAudioContext: AudioContext | undefined;
 let notificationHost: HTMLElement | undefined;
 let notificationStack: HTMLElement | undefined;
 const suppressedEvents = new Set<PlaybackEvent>();
@@ -138,8 +139,14 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
   }
 
   if (message.type === "room:member-joined") {
-    showJoinNotification(message.username);
-    void playJoinSound();
+    showMembershipNotification(message.username, "joined");
+    void playMembershipSound("joined");
+    return;
+  }
+
+  if (message.type === "room:member-left") {
+    showMembershipNotification(message.username, "left");
+    void playMembershipSound("left");
     return;
   }
 
@@ -153,28 +160,36 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
   if (message.type === "room:error") log(message.message);
 }
 
-function showJoinNotification(username: string): void {
+function showMembershipNotification(
+  username: string,
+  event: MembershipEvent,
+): void {
   const stack = getNotificationStack();
   const toast = document.createElement("div");
-  toast.className = "joinToast";
+  toast.className = `memberToast memberToast${event === "joined" ? "Joined" : "Left"}`;
   toast.setAttribute("role", "status");
 
   const icon = document.createElement("span");
-  icon.className = "joinIcon";
+  icon.className = "memberIcon";
   icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "+";
+  icon.textContent = event === "joined" ? "+" : "−";
 
   const copy = document.createElement("span");
-  copy.className = "joinCopy";
+  copy.className = "memberCopy";
   const name = document.createElement("strong");
   name.textContent = username;
-  copy.append(name, document.createTextNode(" joined the room"));
+  copy.append(
+    name,
+    document.createTextNode(
+      event === "joined" ? " joined the room" : " disconnected",
+    ),
+  );
 
   toast.append(icon, copy);
   stack.appendChild(toast);
 
   setTimeout(() => {
-    toast.classList.add("joinToastLeaving");
+    toast.classList.add("memberToastLeaving");
     setTimeout(() => toast.remove(), 180);
   }, JOIN_NOTIFICATION_DURATION_MS);
 }
@@ -203,7 +218,11 @@ function getNotificationStack(): HTMLElement {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    .joinToast {
+    .memberToast {
+      --notification-accent: #f78c25;
+      --notification-accent-text: #ffad5e;
+      --notification-accent-soft: rgba(247, 140, 37, 0.15);
+      --notification-accent-border: rgba(247, 140, 37, 0.55);
       position: relative;
       display: grid;
       grid-template-columns: 36px minmax(0, 1fr);
@@ -219,65 +238,72 @@ function getNotificationStack(): HTMLElement {
       box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
       font-size: 14px;
       line-height: 1.35;
-      animation: joinToastIn 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      animation: memberToastIn 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
       backdrop-filter: blur(12px);
     }
 
-    .joinToast::after {
+    .memberToastLeft {
+      --notification-accent: #f06b64;
+      --notification-accent-text: #ffaaa5;
+      --notification-accent-soft: rgba(240, 107, 100, 0.14);
+      --notification-accent-border: rgba(240, 107, 100, 0.5);
+    }
+
+    .memberToast::after {
       position: absolute;
       right: 0;
       bottom: 0;
       left: 0;
       height: 3px;
-      background: #f78c25;
+      background: var(--notification-accent);
       content: "";
       transform-origin: left;
-      animation: joinToastTimer ${JOIN_NOTIFICATION_DURATION_MS}ms linear both;
+      animation: memberToastTimer ${JOIN_NOTIFICATION_DURATION_MS}ms linear both;
     }
 
-    .joinToastLeaving {
+    .memberToastLeaving {
       opacity: 0;
       transform: translateX(12px);
       transition: opacity 160ms ease, transform 160ms ease;
     }
 
-    .joinIcon {
+    .memberIcon {
       display: grid;
       width: 36px;
       height: 36px;
       place-items: center;
-      border: 1px solid rgba(247, 140, 37, 0.55);
+      border: 1px solid var(--notification-accent-border);
       border-radius: 50%;
-      color: #ffd1a3;
-      background: rgba(247, 140, 37, 0.15);
+      color: var(--notification-accent-text);
+      background: var(--notification-accent-soft);
       font-size: 23px;
       font-weight: 300;
       line-height: 1;
     }
 
-    .joinCopy {
+    .memberCopy {
       overflow-wrap: anywhere;
     }
 
-    .joinCopy strong {
-      color: #ffad5e;
+    .memberCopy strong {
+      color: var(--notification-accent-text);
       font-weight: 700;
     }
 
-    @keyframes joinToastIn {
+    @keyframes memberToastIn {
       from {
         opacity: 0;
         transform: translate3d(18px, -5px, 0) scale(0.97);
       }
     }
 
-    @keyframes joinToastTimer {
+    @keyframes memberToastTimer {
       to { transform: scaleX(0); }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .joinToast,
-      .joinToast::after {
+      .memberToast,
+      .memberToast::after {
         animation: none;
       }
     }
@@ -306,18 +332,23 @@ function mountNotificationHost(): void {
   }
 }
 
-async function playJoinSound(): Promise<void> {
+async function playMembershipSound(event: MembershipEvent): Promise<void> {
   try {
-    joinAudioContext ??= new AudioContext();
-    if (joinAudioContext.state === "suspended") {
-      await joinAudioContext.resume();
+    notificationAudioContext ??= new AudioContext();
+    if (notificationAudioContext.state === "suspended") {
+      await notificationAudioContext.resume();
     }
 
-    const now = joinAudioContext.currentTime;
-    playTone(joinAudioContext, 659.25, now, 0.28, 0.09);
-    playTone(joinAudioContext, 987.77, now + 0.12, 0.36, 0.07);
+    const now = notificationAudioContext.currentTime;
+    if (event === "joined") {
+      playTone(notificationAudioContext, 659.25, now, 0.28, 0.09);
+      playTone(notificationAudioContext, 987.77, now + 0.12, 0.36, 0.07);
+    } else {
+      playTone(notificationAudioContext, 783.99, now, 0.28, 0.07);
+      playTone(notificationAudioContext, 523.25, now + 0.12, 0.36, 0.08);
+    }
   } catch (error: unknown) {
-    log("Could not play join notification", error);
+    log("Could not play membership notification", error);
   }
 }
 

@@ -272,18 +272,23 @@ function receiveSnapshot(
   session: TabSession,
   socket: SyncSocket,
   value: unknown,
-  notifyAboutNewMembers: boolean,
+  notifyAboutMembershipChanges: boolean,
 ): void {
   if (session.socket !== socket || !isRoomSnapshot(value)) return;
   if (value.revision < session.latestRevision) return;
 
-  const previousMemberIds = new Set(
-    session.lastSnapshot?.members.map((member) => member.id) ?? [],
-  );
-  const joinedMembers = notifyAboutNewMembers
+  const previousMembers = session.lastSnapshot?.members ?? [];
+  const previousMemberIds = new Set(previousMembers.map((member) => member.id));
+  const currentMemberIds = new Set(value.members.map((member) => member.id));
+  const joinedMembers = notifyAboutMembershipChanges
     ? value.members.filter(
         (member) =>
           member.id !== socket.id && !previousMemberIds.has(member.id),
+      )
+    : [];
+  const departedMembers = notifyAboutMembershipChanges
+    ? previousMembers.filter(
+        (member) => member.id !== socket.id && !currentMemberIds.has(member.id),
       )
     : [];
 
@@ -302,6 +307,12 @@ function receiveSnapshot(
   for (const member of joinedMembers) {
     postToContent(session, {
       type: "room:member-joined",
+      username: member.username,
+    });
+  }
+  for (const member of departedMembers) {
+    postToContent(session, {
+      type: "room:member-left",
       username: member.username,
     });
   }
