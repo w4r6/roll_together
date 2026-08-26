@@ -6,6 +6,7 @@ import {
 
 import {
   MAX_VIDEO_PROGRESS_SECONDS,
+  V2_SOCKET_PATH,
   normalizeUsername,
   parseJoinRequest,
   parsePlaybackUpdate,
@@ -19,6 +20,8 @@ import {
 } from "@roll-together/protocol";
 import express from "express";
 import { Server as SocketServer } from "socket.io";
+
+import { attachLegacyV1Server, type LegacyV1Server } from "./legacy-v1.js";
 
 interface Room {
   state: PlaybackState;
@@ -52,6 +55,7 @@ export interface RollTogetherServer {
     SocketData
   >;
   rooms: InMemoryRoomStore;
+  legacy: LegacyV1Server;
   listen: (port?: number) => Promise<number>;
   close: () => Promise<void>;
 }
@@ -179,12 +183,17 @@ export function createRollTogetherServer(
         : candidate.test(origin),
     );
 
+  // LEGACY_V1_COMPAT: v1 stays on /socket.io while v2 uses
+  // /v2/socket.io. Delete this mount and legacy-v1.ts after v1 traffic ends.
+  const legacy = attachLegacyV1Server(httpServer, { originAllowed });
+
   const io = new SocketServer<
     ClientToServerEvents,
     ServerToClientEvents,
     Record<string, never>,
     SocketData
   >(httpServer, {
+    path: V2_SOCKET_PATH,
     transports: ["websocket"],
     serveClient: false,
     maxHttpBufferSize: 4_096,
@@ -206,10 +215,16 @@ export function createRollTogetherServer(
   });
 
   app.get("/health", (_request, response) => {
+    const v1Connections = legacy.io.engine.clientsCount;
+    const v2Connections = io.engine.clientsCount;
     response.status(200).json({
       status: "ok",
-      connections: io.engine.clientsCount,
-      rooms: rooms.size,
+      connections: v1Connections + v2Connections,
+      rooms: legacy.rooms.size + rooms.size,
+      // LEGACY_V1_COMPAT: This breakdown makes it possible to confirm that v1
+      // traffic has stopped before deleting the temporary endpoint.
+      connectionsByProtocol: { v1: v1Connections, v2: v2Connections },
+      roomsByProtocol: { v1: legacy.rooms.size, v2: rooms.size },
     });
   });
 
@@ -241,6 +256,7 @@ export function createRollTogetherServer(
     console.info(
       JSON.stringify({
         event: "room_joined",
+        protocolVersion: 2,
         roomUsers: rooms.userCount(snapshot.roomId),
       }),
     );
@@ -294,6 +310,7 @@ export function createRollTogetherServer(
       console.info(
         JSON.stringify({
           event: "room_left",
+          protocolVersion: 2,
           roomUsers: rooms.userCount(roomId),
         }),
       );
@@ -304,6 +321,7 @@ export function createRollTogetherServer(
     httpServer,
     io,
     rooms,
+    legacy,
     listen(port = 0) {
       return new Promise((resolve, reject) => {
         httpServer.once("error", reject);
@@ -319,9 +337,16 @@ export function createRollTogetherServer(
       });
     },
     close() {
-      return new Promise((resolve) => io.close(() => resolve()));
+      return closeSocketServers(io, legacy.io);
     },
   };
+}
+
+function closeSocketServers(v2: SocketServer, v1: SocketServer): Promise<void> {
+  return Promise.all([
+    new Promise<void>((resolve) => v2.close(() => resolve())),
+    new Promise<void>((resolve) => v1.close(() => resolve())),
+  ]).then(() => undefined);
 }
 
 function withinRateLimit(

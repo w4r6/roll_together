@@ -2,7 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { io: createClient } = require("socket.io-client");
-const { PROTOCOL_VERSION } = require("../../../packages/protocol/dist");
+const {
+  PROTOCOL_VERSION,
+  V2_SOCKET_PATH,
+} = require("../../../packages/protocol/dist");
 const { createRollTogetherServer } = require("../build/server");
 
 const sockets = new Set();
@@ -105,9 +108,95 @@ test("rejects malformed room identifiers without crashing", async () => {
   assert.equal(server.rooms.size, 0);
 });
 
+test("serves extension v1 on the unchanged default Socket.IO endpoint", async () => {
+  const host = connectLegacy({ videoProgress: "12", videoState: "playing" });
+  const [roomId, state, progress, userCount] = await onceArgs(host, "join");
+
+  assert.match(roomId, /^[A-Za-z0-9]{20}$/);
+  assert.equal(state, "paused");
+  assert.equal(progress, 12);
+  assert.equal(userCount, 1);
+
+  const hostMembershipUpdate = onceArgs(host, "update");
+  const guest = connectLegacy({
+    room: roomId,
+    videoProgress: "0",
+    videoState: "paused",
+  });
+  const [, , , guestCount] = await onceArgs(guest, "join");
+  const [, , , hostCount] = await hostMembershipUpdate;
+  assert.equal(guestCount, 2);
+  assert.equal(hostCount, 2);
+
+  const guestPlaybackUpdate = onceArgs(guest, "update");
+  host.emit("update", "playing", 25);
+  const [senderId, nextState, nextProgress, nextCount] =
+    await guestPlaybackUpdate;
+  assert.equal(senderId, host.id);
+  assert.equal(nextState, "playing");
+  assert.ok(nextProgress >= 25);
+  assert.equal(nextCount, 2);
+});
+
+test("keeps v1 and v2 rooms isolated even when their IDs match", async () => {
+  const sharedRoomId = "ABCDEFGHIJKLMNOPQRST";
+  const legacy = connectLegacy({
+    room: sharedRoomId,
+    videoProgress: "5",
+    videoState: "paused",
+  });
+  const [, , , legacyCount] = await onceArgs(legacy, "join");
+
+  const modern = connect({
+    roomId: sharedRoomId,
+    state: "paused",
+    progress: 50,
+  });
+  const modernSnapshot = await once(modern, "room:joined");
+
+  assert.equal(legacyCount, 1);
+  assert.equal(modernSnapshot.members.length, 1);
+  assert.equal(server.legacy.rooms.size, 1);
+  assert.equal(server.rooms.size, 1);
+
+  const unexpectedModernUpdate = expectNoEvent(modern, "room:updated");
+  legacy.emit("update", "playing", 30);
+  await unexpectedModernUpdate;
+});
+
+test("reports v1 and v2 usage separately for migration monitoring", async () => {
+  const legacy = connectLegacy({
+    videoProgress: "0",
+    videoState: "paused",
+  });
+  await onceArgs(legacy, "join");
+  const modern = connect({ state: "paused", progress: 0 });
+  await once(modern, "room:joined");
+
+  const response = await fetch(`${url}/health`);
+  const health = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(health.connections, 2);
+  assert.equal(health.rooms, 2);
+  assert.deepEqual(health.connectionsByProtocol, { v1: 1, v2: 1 });
+  assert.deepEqual(health.roomsByProtocol, { v1: 1, v2: 1 });
+});
+
 function connect(auth) {
   const socket = createClient(url, {
+    path: V2_SOCKET_PATH,
     auth: { protocolVersion: PROTOCOL_VERSION, username: "Host", ...auth },
+    forceNew: true,
+    reconnection: false,
+    transports: ["websocket"],
+  });
+  sockets.add(socket);
+  return socket;
+}
+
+function connectLegacy(query) {
+  const socket = createClient(url, {
+    query,
     forceNew: true,
     reconnection: false,
     transports: ["websocket"],
@@ -126,5 +215,32 @@ function once(socket, event) {
       clearTimeout(timeout);
       resolve(value);
     });
+  });
+}
+
+function onceArgs(socket, event) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out waiting for ${event}`)),
+      2_000,
+    );
+    socket.once(event, (...values) => {
+      clearTimeout(timeout);
+      resolve(values);
+    });
+  });
+}
+
+function expectNoEvent(socket, event) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off(event, onEvent);
+      resolve();
+    }, 150);
+    const onEvent = () => {
+      clearTimeout(timeout);
+      reject(new Error(`Unexpected ${event}`));
+    };
+    socket.once(event, onEvent);
   });
 }

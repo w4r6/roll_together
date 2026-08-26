@@ -1,5 +1,6 @@
 import {
   PROTOCOL_VERSION,
+  V2_SOCKET_PATH,
   isRoomSnapshot,
   normalizeUsername,
   type ClientToServerEvents,
@@ -221,6 +222,9 @@ async function connectRoom(
     : { ...playback, protocolVersion: PROTOCOL_VERSION, username };
 
   const socket: SyncSocket = io(serverUrl, {
+    // Extension v1 owns Socket.IO's default /socket.io path during rollout.
+    // Keep v2 isolated here; this path can remain after v1 is retired.
+    path: V2_SOCKET_PATH,
     auth: joinRequest,
     transports: ["websocket"],
     reconnection: true,

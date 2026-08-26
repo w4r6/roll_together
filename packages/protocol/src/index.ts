@@ -1,4 +1,5 @@
 export const PROTOCOL_VERSION = 2 as const;
+export const V2_SOCKET_PATH = "/v2/socket.io";
 export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{20,64}$/;
 export const MAX_VIDEO_PROGRESS_SECONDS = 7 * 24 * 60 * 60;
 export const MAX_USERNAME_LENGTH = 24;
