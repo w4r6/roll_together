@@ -47,6 +47,7 @@ interface TabSession {
   roomId?: string;
   lastSnapshot?: RoomSnapshot;
   lastSnapshotReceivedAtMs: number;
+  awaitingInitialSnapshotRevision?: number;
   latestRevision: number;
   connectionAttempt: number;
   status: ConnectionStatus;
@@ -257,7 +258,38 @@ function handleContentMessage(
     return;
   }
 
+  if (message.type === "room:snapshot-applied") {
+    if (
+      session.awaitingInitialSnapshotRevision !== undefined &&
+      message.revision >= session.awaitingInitialSnapshotRevision
+    ) {
+      log("initial_room_snapshot_application_confirmed", {
+        tabId,
+        roomId: session.roomId,
+        revision: message.revision,
+      });
+      delete session.awaitingInitialSnapshotRevision;
+    }
+    return;
+  }
+
   if (message.type === "playback:update" && session.socket?.connected) {
+    const roomSnapshot = snapshotAtCurrentTime(session);
+    if (session.awaitingInitialSnapshotRevision !== undefined && roomSnapshot) {
+      log("join_playback_update_held_for_host", {
+        tabId,
+        roomId: session.roomId,
+        playback: message.playback,
+        roomState: roomSnapshot.state,
+        roomProgress: roomSnapshot.progress,
+      });
+      postToContent(session, {
+        type: "room:snapshot",
+        snapshot: roomSnapshot,
+      });
+      return;
+    }
+
     log("playback_update_sent", {
       tabId,
       roomId: session.roomId,
@@ -342,6 +374,7 @@ async function connectRoom(
   else delete session.roomId;
   delete session.lastSnapshot;
   session.lastSnapshotReceivedAtMs = 0;
+  delete session.awaitingInitialSnapshotRevision;
   session.latestRevision = -1;
   session.pendingLocalEpisodePath = undefined;
   session.awaitingLocalPlaybackPath = undefined;
@@ -458,6 +491,11 @@ function receiveSnapshot(
   session.roomId = value.roomId;
   session.lastSnapshot = value;
   session.lastSnapshotReceivedAtMs = Date.now();
+  if (!notifyAboutMembershipChanges && value.members.length > 1) {
+    session.awaitingInitialSnapshotRevision = value.revision;
+  } else if (session.awaitingInitialSnapshotRevision !== undefined) {
+    session.awaitingInitialSnapshotRevision = value.revision;
+  }
   if (value.episodePath === session.pendingLocalEpisodePath) {
     session.pendingLocalEpisodePath = undefined;
   }
@@ -510,6 +548,7 @@ function disconnectRoom(tabId: number): void {
   delete session.roomId;
   delete session.lastSnapshot;
   session.lastSnapshotReceivedAtMs = 0;
+  delete session.awaitingInitialSnapshotRevision;
   session.latestRevision = -1;
   session.pendingLocalEpisodePath = undefined;
   session.awaitingLocalPlaybackPath = undefined;

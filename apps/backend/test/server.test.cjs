@@ -29,7 +29,7 @@ test.afterEach(async () => {
   await server.close();
 });
 
-test("keeps existing room state when another viewer joins", async () => {
+test("keeps the host state when a guest joins with saved progress", async () => {
   const host = connect({ state: "playing", progress: 42 });
   const hostSnapshot = await once(host, "room:joined");
   const membershipUpdate = once(host, "room:updated");
@@ -37,7 +37,7 @@ test("keeps existing room state when another viewer joins", async () => {
   const guest = connect({
     roomId: hostSnapshot.roomId,
     state: "paused",
-    progress: 0,
+    progress: 443,
     username: "Guest",
   });
   const guestSnapshot = await once(guest, "room:joined");

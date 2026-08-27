@@ -18,6 +18,7 @@ export type ConnectionStatus =
 export type ContentToBackgroundMessage =
   | { type: "content:ready"; playback: PlaybackUpdate; roomId?: string }
   | { type: "room:connect"; playback: PlaybackUpdate; roomId?: string }
+  | { type: "room:snapshot-applied"; revision: number }
   | { type: "playback:update"; playback: PlaybackUpdate };
 
 export type BackgroundToContentMessage =

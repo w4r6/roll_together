@@ -28,8 +28,13 @@ let port: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelayMs = 250;
 let player: HTMLVideoElement | undefined;
+let playerHasBeenReady = false;
 let playerMissingLogged = false;
 let joinedRoomId = getRoomIdFromUrl(window.location.href);
+let latestRoomSnapshot: RoomSnapshot | undefined;
+let latestRoomSnapshotReceivedAtMs = 0;
+let pendingRoomSnapshot: RoomSnapshot | undefined;
+let playerReadyTimer: ReturnType<typeof setTimeout> | undefined;
 let notificationAudioContext: AudioContext | undefined;
 let notificationHost: HTMLElement | undefined;
 let notificationStack: HTMLElement | undefined;
@@ -96,6 +101,9 @@ function attachBestPlayer(): void {
   if (player?.isConnected) return;
 
   if (player) removePlayerListeners(player);
+  if (playerReadyTimer) clearTimeout(playerReadyTimer);
+  playerReadyTimer = undefined;
+  playerHasBeenReady = false;
   player = findBestPlayer();
   if (!player) {
     if (!playerMissingLogged) {
@@ -111,12 +119,15 @@ function attachBestPlayer(): void {
   for (const event of playbackEvents) {
     player.addEventListener(event, handleLocalPlayback);
   }
+  player.addEventListener("canplay", handlePlayerCanPlay);
+  playerHasBeenReady = player.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
   log("video_player_attached", {
     width: player.clientWidth,
     height: player.clientHeight,
     readyState: player.readyState,
     playback: currentPlayback(),
   });
+  if (playerHasBeenReady) applyPendingRoomSnapshot();
   announceReady();
 }
 
@@ -133,6 +144,7 @@ function removePlayerListeners(video: HTMLVideoElement): void {
   for (const event of playbackEvents) {
     video.removeEventListener(event, handleLocalPlayback);
   }
+  video.removeEventListener("canplay", handlePlayerCanPlay);
 }
 
 function handleLocalPlayback(event: Event): void {
@@ -147,6 +159,31 @@ function handleLocalPlayback(event: Event): void {
     log("local_playback_changed", { eventName, playback });
     postMessage({ type: "playback:update", playback });
   }
+}
+
+function handlePlayerCanPlay(): void {
+  if (playerHasBeenReady) return;
+  if (playerReadyTimer) clearTimeout(playerReadyTimer);
+  log("video_player_can_play", { playback: currentPlayback() });
+  // Let Crunchyroll's own canplay/resume handlers finish before seeking to the
+  // room position. Seeking earlier can leave its stream controller stalled.
+  playerReadyTimer = setTimeout(() => {
+    playerReadyTimer = undefined;
+    playerHasBeenReady = true;
+    applyPendingRoomSnapshot();
+  }, 100);
+}
+
+function applyPendingRoomSnapshot(): void {
+  if (!pendingRoomSnapshot) return;
+  pendingRoomSnapshot = undefined;
+  const snapshot = latestRoomSnapshotAtCurrentTime();
+  if (snapshot) void applyRoomSnapshot(snapshot);
+}
+
+async function applyRoomSnapshot(snapshot: RoomSnapshot): Promise<void> {
+  await applySnapshot(snapshot);
+  postMessage({ type: "room:snapshot-applied", revision: snapshot.revision });
 }
 
 function announceReady(): void {
@@ -174,6 +211,8 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
 
   if (message.type === "room:snapshot") {
     joinedRoomId = message.snapshot.roomId;
+    latestRoomSnapshot = message.snapshot;
+    latestRoomSnapshotReceivedAtMs = Date.now();
     log("room_snapshot_received", {
       roomId: message.snapshot.roomId,
       episodePath: message.snapshot.episodePath,
@@ -182,7 +221,15 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
       progress: message.snapshot.progress,
       memberCount: message.snapshot.members.length,
     });
-    void applySnapshot(message.snapshot);
+    if (!playerHasBeenReady) {
+      pendingRoomSnapshot = message.snapshot;
+      log("room_snapshot_deferred_until_player_ready", {
+        revision: message.snapshot.revision,
+        readyState: player?.readyState,
+      });
+    } else {
+      void applyRoomSnapshot(message.snapshot);
+    }
     return;
   }
 
@@ -201,6 +248,8 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
   if (message.type === "room:disconnected") {
     log("room_disconnected", { roomId: joinedRoomId }, "info");
     joinedRoomId = undefined;
+    latestRoomSnapshot = undefined;
+    pendingRoomSnapshot = undefined;
     suppressedEvents.clear();
     removeRoomIdFromAddressBar();
     return;
@@ -209,6 +258,24 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
   if (message.type === "room:error") {
     log("room_error_received", { message: message.message }, "warn");
   }
+}
+
+function latestRoomSnapshotAtCurrentTime(): RoomSnapshot | undefined {
+  if (!latestRoomSnapshot || latestRoomSnapshot.state !== "playing") {
+    return latestRoomSnapshot;
+  }
+
+  const elapsedSeconds = Math.max(
+    0,
+    (Date.now() - latestRoomSnapshotReceivedAtMs) / 1_000,
+  );
+  return {
+    ...latestRoomSnapshot,
+    progress: Math.min(
+      latestRoomSnapshot.progress + elapsedSeconds,
+      MAX_VIDEO_PROGRESS_SECONDS,
+    ),
+  };
 }
 
 function showMembershipNotification(
@@ -436,47 +503,86 @@ async function applySnapshot(snapshot: RoomSnapshot): Promise<void> {
     return;
   }
 
-  const driftSeconds = player.currentTime - snapshot.progress;
-  if (Math.abs(driftSeconds) > SYNC_TOLERANCE_SECONDS) {
-    log("playback_seek_applied", {
-      roomId: snapshot.roomId,
-      revision: snapshot.revision,
-      fromProgress: player.currentTime,
-      toProgress: snapshot.progress,
-      driftSeconds,
-    });
-    suppressedEvents.add("seeked");
-    try {
-      player.currentTime = snapshot.progress;
-    } catch (error: unknown) {
-      suppressedEvents.delete("seeked");
-      log("playback_seek_failed", { error, driftSeconds }, "error");
-    }
-  }
-
-  if (snapshot.state === "paused" && !player.paused) {
+  const activePlayer = player;
+  if (snapshot.state === "paused" && !activePlayer.paused) {
     log("playback_pause_applied", {
       roomId: snapshot.roomId,
       revision: snapshot.revision,
     });
     suppressedEvents.add("pause");
-    player.pause();
-    return;
+    activePlayer.pause();
   }
 
-  if (snapshot.state === "playing" && player.paused) {
+  const driftSeconds = activePlayer.currentTime - snapshot.progress;
+  if (Math.abs(driftSeconds) > SYNC_TOLERANCE_SECONDS) {
+    log("playback_seek_applied", {
+      roomId: snapshot.roomId,
+      revision: snapshot.revision,
+      fromProgress: activePlayer.currentTime,
+      toProgress: snapshot.progress,
+      driftSeconds,
+    });
+    await seekPlayer(activePlayer, snapshot.progress, driftSeconds);
+  }
+
+  if (snapshot.state === "paused") return;
+
+  if (snapshot.state === "playing" && activePlayer.paused) {
     log("playback_play_applied", {
       roomId: snapshot.roomId,
       revision: snapshot.revision,
     });
     suppressedEvents.add("play");
     try {
-      await player.play();
+      await activePlayer.play();
     } catch (error: unknown) {
       suppressedEvents.delete("play");
       log("synchronized_playback_blocked", { error }, "error");
     }
   }
+}
+
+async function seekPlayer(
+  video: HTMLVideoElement,
+  progress: number,
+  driftSeconds: number,
+): Promise<void> {
+  suppressedEvents.add("seeked");
+
+  const seekCompleted = new Promise<boolean>((resolve) => {
+    const handleSeeked = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      video.removeEventListener("seeked", handleSeeked);
+      resolve(false);
+    }, 5_000);
+    video.addEventListener("seeked", handleSeeked, { once: true });
+
+    try {
+      video.currentTime = progress;
+    } catch (error: unknown) {
+      clearTimeout(timeout);
+      video.removeEventListener("seeked", handleSeeked);
+      suppressedEvents.delete("seeked");
+      log("playback_seek_failed", { error, driftSeconds }, "error");
+      resolve(false);
+    }
+  });
+
+  if (await seekCompleted) return;
+  suppressedEvents.delete("seeked");
+  log(
+    "playback_seek_timed_out",
+    {
+      driftSeconds,
+      currentTime: video.currentTime,
+      readyState: video.readyState,
+      networkState: video.networkState,
+    },
+    "warn",
+  );
 }
 
 function currentPlayback(): PlaybackUpdate | undefined {
