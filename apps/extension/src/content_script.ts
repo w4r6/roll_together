@@ -23,6 +23,7 @@ type PlaybackEvent = "pause" | "play" | "seeked";
 type MembershipEvent = "joined" | "left";
 
 const JOIN_NOTIFICATION_DURATION_MS = 4_500;
+const TRANSIENT_PAUSE_GRACE_MS = 250;
 
 let port: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -34,7 +35,10 @@ let joinedRoomId = getRoomIdFromUrl(window.location.href);
 let latestRoomSnapshot: RoomSnapshot | undefined;
 let latestRoomSnapshotReceivedAtMs = 0;
 let pendingRoomSnapshot: RoomSnapshot | undefined;
+let queuedRoomSnapshot: RoomSnapshot | undefined;
+let snapshotApplyInProgress = false;
 let playerReadyTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingPauseTimer: ReturnType<typeof setTimeout> | undefined;
 let notificationAudioContext: AudioContext | undefined;
 let notificationHost: HTMLElement | undefined;
 let notificationStack: HTMLElement | undefined;
@@ -154,11 +158,40 @@ function handleLocalPlayback(event: Event): void {
     return;
   }
 
+  if (eventName === "pause") {
+    schedulePauseUpdate();
+    return;
+  }
+
+  cancelPendingPauseUpdate();
+
   const playback = currentPlayback();
   if (playback) {
     log("local_playback_changed", { eventName, playback });
     postMessage({ type: "playback:update", playback });
   }
+}
+
+function schedulePauseUpdate(): void {
+  cancelPendingPauseUpdate();
+  log("local_pause_update_deferred", {
+    gracePeriodMs: TRANSIENT_PAUSE_GRACE_MS,
+    playback: currentPlayback(),
+  });
+  pendingPauseTimer = setTimeout(() => {
+    pendingPauseTimer = undefined;
+    const playback = currentPlayback();
+    if (!playback || playback.state !== "paused") return;
+    log("local_playback_changed", { eventName: "pause", playback });
+    postMessage({ type: "playback:update", playback });
+  }, TRANSIENT_PAUSE_GRACE_MS);
+}
+
+function cancelPendingPauseUpdate(): void {
+  if (!pendingPauseTimer) return;
+  clearTimeout(pendingPauseTimer);
+  pendingPauseTimer = undefined;
+  log("local_pause_update_cancelled");
 }
 
 function handlePlayerCanPlay(): void {
@@ -178,12 +211,30 @@ function applyPendingRoomSnapshot(): void {
   if (!pendingRoomSnapshot) return;
   pendingRoomSnapshot = undefined;
   const snapshot = latestRoomSnapshotAtCurrentTime();
-  if (snapshot) void applyRoomSnapshot(snapshot);
+  if (snapshot) queueRoomSnapshot(snapshot);
 }
 
-async function applyRoomSnapshot(snapshot: RoomSnapshot): Promise<void> {
-  await applySnapshot(snapshot);
-  postMessage({ type: "room:snapshot-applied", revision: snapshot.revision });
+function queueRoomSnapshot(snapshot: RoomSnapshot): void {
+  queuedRoomSnapshot = snapshot;
+  if (!snapshotApplyInProgress) void drainRoomSnapshotQueue();
+}
+
+async function drainRoomSnapshotQueue(): Promise<void> {
+  snapshotApplyInProgress = true;
+  try {
+    while (queuedRoomSnapshot) {
+      const snapshot = queuedRoomSnapshot;
+      queuedRoomSnapshot = undefined;
+      await applySnapshot(snapshot);
+      postMessage({
+        type: "room:snapshot-applied",
+        revision: snapshot.revision,
+      });
+    }
+  } finally {
+    snapshotApplyInProgress = false;
+    if (queuedRoomSnapshot) void drainRoomSnapshotQueue();
+  }
 }
 
 function announceReady(): void {
@@ -228,7 +279,7 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
         readyState: player?.readyState,
       });
     } else {
-      void applyRoomSnapshot(message.snapshot);
+      queueRoomSnapshot(message.snapshot);
     }
     return;
   }
@@ -250,6 +301,8 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
     joinedRoomId = undefined;
     latestRoomSnapshot = undefined;
     pendingRoomSnapshot = undefined;
+    queuedRoomSnapshot = undefined;
+    cancelPendingPauseUpdate();
     suppressedEvents.clear();
     removeRoomIdFromAddressBar();
     return;
@@ -523,6 +576,18 @@ async function applySnapshot(snapshot: RoomSnapshot): Promise<void> {
       driftSeconds,
     });
     await seekPlayer(activePlayer, snapshot.progress, driftSeconds);
+  }
+
+  if (
+    latestRoomSnapshot?.roomId !== snapshot.roomId ||
+    latestRoomSnapshot.revision !== snapshot.revision
+  ) {
+    log("snapshot_apply_superseded", {
+      roomId: snapshot.roomId,
+      revision: snapshot.revision,
+      latestRevision: latestRoomSnapshot?.revision,
+    });
+    return;
   }
 
   if (snapshot.state === "paused") return;
