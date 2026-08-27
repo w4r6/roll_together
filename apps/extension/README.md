@@ -22,10 +22,14 @@ npm run build:production
 
 Outputs:
 
-- Chrome: `apps/extension/build`
-- Firefox: `apps/extension/build-firefox`
+- Development Chrome: `apps/extension/build`
+- Development Firefox: `apps/extension/build-firefox`
+- Production Chrome: `apps/extension/build-production`
+- Production Firefox: `apps/extension/build-production-firefox`
 
 Development builds use `http://localhost:3000`; production builds use the URL in `env.json`.
+
+For local development, run `npm run dev` from the repository root. It watches the Chrome extension and shared protocol while automatically restarting the local backend. Production builds use separate directories and will not replace this localhost build.
 
 ## Load from source
 

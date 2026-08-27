@@ -10,6 +10,8 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "npm run build:protocol && concurrently --kill-others-on-fail --names protocol,extension,backend --prefix-colors blue,magenta,green \"npm run watch -w @roll-together/protocol\" \"npm run watch:chrome -w roll_together_extension\" \"npm run start:dev -w roll_together_backend\"",
+    "dev:firefox": "npm run build:protocol && concurrently --kill-others-on-fail --names protocol,extension,backend --prefix-colors blue,magenta,green \"npm run watch -w @roll-together/protocol\" \"npm run watch:firefox -w roll_together_extension\" \"npm run start:dev -w roll_together_backend\"",
     "build": "npm run build:protocol && npm run build -w roll_together_backend && npm run build -w roll_together_extension",
     "build:protocol": "npm run build -w @roll-together/protocol",
     "build:extension": "npm run build:protocol && npm run build -w roll_together_extension",
@@ -36,6 +38,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
+    "concurrently": "^10.0.5",
     "eslint": "^10.0.0",
     "globals": "^16.0.0",
     "prettier": "^3.0.0",

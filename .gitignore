@@ -3,6 +3,8 @@ apps/*/node_modules/
 
 apps/extension/build/
 apps/extension/build-firefox/
+apps/extension/build-production/
+apps/extension/build-production-firefox/
 apps/extension/rolltogether.zip
 apps/extension/rolltogether-chrome.zip
 apps/extension/rolltogether-firefox.zip

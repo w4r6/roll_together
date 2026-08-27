@@ -18,6 +18,7 @@ npm install
 ## Common Commands
 
 ```bash
+npm run dev
 npm run build
 npm run build:chrome
 npm run build:firefox
@@ -25,7 +26,9 @@ npm run build:backend
 npm run start:backend:dev
 ```
 
-Extension build outputs are written under `apps/extension/build` and `apps/extension/build-firefox`.
+`npm run dev` starts the Chrome extension compiler in watch mode and the backend on `http://localhost:3000`. It also watches the shared protocol package, so source changes rebuild automatically. Use `npm run dev:firefox` for Firefox.
+
+Development extension outputs are written under `apps/extension/build` and `apps/extension/build-firefox`. Production outputs are kept separately under `apps/extension/build-production` and `apps/extension/build-production-firefox`, so production checks cannot overwrite a running localhost build.
 
 ## DigitalOcean Deployment
 

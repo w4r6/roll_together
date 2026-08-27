@@ -72,7 +72,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rolltogether-${{ matrix.browser }}
-          path: apps/extension/build${{ matrix.browser == 'firefox' && '-firefox' || '' }}
+          path: apps/extension/build-production${{ matrix.browser == 'firefox' && '-firefox' || '' }}
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4

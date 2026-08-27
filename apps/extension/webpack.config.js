@@ -12,7 +12,13 @@ const envVariables = require("./env.json");
 module.exports = (env) => {
   const isFirefox = Boolean(env.firefox);
   const isProduction = Boolean(env.production);
-  const outputDir = isFirefox ? "build-firefox" : "build";
+  const outputDir = isProduction
+    ? isFirefox
+      ? "build-production-firefox"
+      : "build-production"
+    : isFirefox
+      ? "build-firefox"
+      : "build";
   const environment = isProduction ? "production" : "development";
   const syncServer = envVariables[environment].SYNC_SERVER;
   const baseManifest = require("./manifest.base.json");
