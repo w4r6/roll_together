@@ -9,6 +9,8 @@ import {
 } from "@roll-together/protocol";
 import { Server as SocketServer } from "socket.io";
 
+import type { DebugLogSink } from "./debug-log.js";
+
 interface LegacyRoom {
   state: PlaybackState;
   progress: number;
@@ -54,6 +56,7 @@ interface LegacyV1ServerOptions {
   originAllowed: (origin: string | undefined) => boolean;
   now?: () => number;
   generateRoomId?: () => string;
+  debugLog?: DebugLogSink;
 }
 
 // LEGACY_V1_COMPAT: This entire file is the isolated extension v1 backend.
@@ -216,11 +219,43 @@ export function attachLegacyV1Server(
         roomUsers: snapshot.userCount,
       }),
     );
+    options.debugLog?.record({
+      level: "info",
+      source: "backend",
+      event: "room_joined",
+      details: {
+        protocolVersion: 1,
+        socketId: socket.id,
+        roomId: snapshot.roomId,
+        roomUsers: snapshot.userCount,
+      },
+    });
 
     socket.on("update", (state: PlaybackState, progress: number) => {
-      if (!isPlaybackState(state) || !isValidProgress(progress)) return;
+      if (!isPlaybackState(state) || !isValidProgress(progress)) {
+        options.debugLog?.record({
+          level: "warn",
+          source: "backend",
+          event: "playback_update_rejected",
+          details: { protocolVersion: 1, socketId: socket.id },
+        });
+        return;
+      }
       const nextSnapshot = rooms.update(socket.data.roomId, state, progress);
       if (!nextSnapshot) return;
+      options.debugLog?.record({
+        level: "debug",
+        source: "backend",
+        event: "playback_updated",
+        details: {
+          protocolVersion: 1,
+          socketId: socket.id,
+          roomId: socket.data.roomId,
+          state,
+          progress,
+          roomUsers: nextSnapshot.userCount,
+        },
+      });
       socket
         .to(socket.data.roomId)
         .emit(
@@ -232,7 +267,7 @@ export function attachLegacyV1Server(
         );
     });
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
       rooms.leave(socket.data.roomId, socket.id);
       console.info(
         JSON.stringify({
@@ -241,6 +276,18 @@ export function attachLegacyV1Server(
           roomUsers: rooms.userCount(socket.data.roomId),
         }),
       );
+      options.debugLog?.record({
+        level: "info",
+        source: "backend",
+        event: "room_left",
+        details: {
+          protocolVersion: 1,
+          socketId: socket.id,
+          roomId: socket.data.roomId,
+          reason,
+          roomUsers: rooms.userCount(socket.data.roomId),
+        },
+      });
     });
   });
 

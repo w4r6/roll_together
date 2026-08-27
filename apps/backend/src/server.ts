@@ -22,6 +22,12 @@ import {
 import express from "express";
 import { Server as SocketServer } from "socket.io";
 
+import {
+  DevelopmentDebugLog,
+  isDebugEntry,
+  type DebugLevel,
+  type DebugLogSink,
+} from "./debug-log.js";
 import { attachLegacyV1Server, type LegacyV1Server } from "./legacy-v1.js";
 
 interface Room {
@@ -46,6 +52,7 @@ export interface ServerOptions {
   maxUpdatesPerSecond?: number;
   now?: () => number;
   generateRoomId?: () => string;
+  debugLog?: DebugLogSink | false;
 }
 
 export interface RollTogetherServer {
@@ -193,6 +200,20 @@ export function createRollTogetherServer(
   const maxConnections = options.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
   const maxUpdatesPerSecond =
     options.maxUpdatesPerSecond ?? DEFAULT_MAX_UPDATES_PER_SECOND;
+  const debugLog =
+    options.debugLog === false
+      ? undefined
+      : (options.debugLog ??
+        (process.env.NODE_ENV === "production"
+          ? undefined
+          : new DevelopmentDebugLog()));
+  const debug = (
+    event: string,
+    details?: unknown,
+    level: DebugLevel = "debug",
+  ): void => {
+    debugLog?.record({ level, source: "backend", event, details });
+  };
 
   const originAllowed = (origin: string | undefined): boolean =>
     origin === undefined ||
@@ -204,7 +225,10 @@ export function createRollTogetherServer(
 
   // LEGACY_V1_COMPAT: v1 stays on /socket.io while v2 uses
   // /v2/socket.io. Delete this mount and legacy-v1.ts after v1 traffic ends.
-  const legacy = attachLegacyV1Server(httpServer, { originAllowed });
+  const legacy = attachLegacyV1Server(httpServer, {
+    originAllowed,
+    ...(debugLog ? { debugLog } : {}),
+  });
 
   const io = new SocketServer<
     ClientToServerEvents,
@@ -247,14 +271,46 @@ export function createRollTogetherServer(
     });
   });
 
+  if (debugLog) {
+    app.post(
+      "/__debug/log",
+      express.json({ limit: "128kb", strict: true }),
+      (request, response) => {
+        const entries = debugEntriesFromBody(request.body);
+        if (!entries) {
+          debug("extension_debug_batch_rejected", undefined, "warn");
+          response.status(400).json({ error: "invalid_debug_batch" });
+          return;
+        }
+
+        for (const entry of entries) debugLog.record(entry);
+        response.status(204).end();
+      },
+    );
+    debug(
+      "debug_collector_ready",
+      { path: debugLog.path, maxBatchEntries: 100 },
+      "info",
+    );
+  }
+
   io.use((socket, next) => {
     if (io.engine.clientsCount > maxConnections) {
+      debug("socket_handshake_rejected", { reason: "server_full" }, "warn");
       next(new Error("server_full"));
       return;
     }
 
     const joinRequest = parseJoinRequest(socket.handshake.auth);
     if (!joinRequest) {
+      debug(
+        "socket_handshake_rejected",
+        {
+          reason: "invalid_request",
+          origin: socket.handshake.headers.origin,
+        },
+        "warn",
+      );
       next(new Error("invalid_request"));
       return;
     }
@@ -272,6 +328,22 @@ export function createRollTogetherServer(
     socket.emit("room:joined", snapshot);
     socket.to(snapshot.roomId).emit("room:updated", snapshot);
 
+    debug(
+      "room_joined",
+      {
+        protocolVersion: 2,
+        socketId: socket.id,
+        roomId: snapshot.roomId,
+        createdRoom: socket.data.joinRequest.roomId === undefined,
+        roomUsers: rooms.userCount(snapshot.roomId),
+        revision: snapshot.revision,
+        state: snapshot.state,
+        progress: snapshot.progress,
+        episodePath: snapshot.episodePath,
+      },
+      "info",
+    );
+
     console.info(
       JSON.stringify({
         event: "room_joined",
@@ -282,6 +354,15 @@ export function createRollTogetherServer(
 
     socket.on("playback:update", (value: PlaybackUpdate) => {
       if (!withinRateLimit(socket.data, maxUpdatesPerSecond)) {
+        debug(
+          "playback_update_rejected",
+          {
+            socketId: socket.id,
+            roomId: socket.data.roomId,
+            reason: "rate_limited",
+          },
+          "warn",
+        );
         const error: ProtocolError = {
           code: "rate_limited",
           message: "Too many playback updates",
@@ -293,6 +374,11 @@ export function createRollTogetherServer(
       const update = parsePlaybackUpdate(value);
       const roomId = socket.data.roomId;
       if (!update || !roomId) {
+        debug(
+          "playback_update_rejected",
+          { socketId: socket.id, roomId, reason: "invalid_request", value },
+          "warn",
+        );
         const error: ProtocolError = {
           code: "invalid_request",
           message: "Invalid playback update",
@@ -302,11 +388,30 @@ export function createRollTogetherServer(
       }
 
       const nextSnapshot = rooms.update(roomId, update);
-      if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
+      if (nextSnapshot) {
+        debug("playback_updated", {
+          socketId: socket.id,
+          roomId,
+          state: nextSnapshot.state,
+          progress: nextSnapshot.progress,
+          revision: nextSnapshot.revision,
+          roomUsers: nextSnapshot.members.length,
+        });
+        io.to(roomId).emit("room:updated", nextSnapshot);
+      }
     });
 
     socket.on("episode:update", (value: string) => {
       if (!withinRateLimit(socket.data, maxUpdatesPerSecond)) {
+        debug(
+          "episode_update_rejected",
+          {
+            socketId: socket.id,
+            roomId: socket.data.roomId,
+            reason: "rate_limited",
+          },
+          "warn",
+        );
         const error: ProtocolError = {
           code: "rate_limited",
           message: "Too many room updates",
@@ -318,6 +423,16 @@ export function createRollTogetherServer(
       const episodePath = parseEpisodePath(value);
       const roomId = socket.data.roomId;
       if (!episodePath || !roomId) {
+        debug(
+          "episode_update_rejected",
+          {
+            socketId: socket.id,
+            roomId,
+            episodePath: value,
+            reason: "invalid_request",
+          },
+          "warn",
+        );
         const error: ProtocolError = {
           code: "invalid_request",
           message: "Invalid episode update",
@@ -327,13 +442,26 @@ export function createRollTogetherServer(
       }
 
       const nextSnapshot = rooms.updateEpisode(roomId, episodePath);
-      if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
+      if (nextSnapshot) {
+        debug("episode_updated", {
+          socketId: socket.id,
+          roomId,
+          episodePath,
+          revision: nextSnapshot.revision,
+        });
+        io.to(roomId).emit("room:updated", nextSnapshot);
+      }
     });
 
     socket.on("profile:update", (value: string) => {
       const username = normalizeUsername(value);
       const roomId = socket.data.roomId;
       if (!username || !roomId) {
+        debug(
+          "profile_update_rejected",
+          { socketId: socket.id, roomId, reason: "invalid_request" },
+          "warn",
+        );
         const error: ProtocolError = {
           code: "invalid_request",
           message: "Invalid username",
@@ -343,14 +471,32 @@ export function createRollTogetherServer(
       }
 
       const nextSnapshot = rooms.rename(roomId, socket.id, username);
-      if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
+      if (nextSnapshot) {
+        debug("profile_updated", {
+          socketId: socket.id,
+          roomId,
+          revision: nextSnapshot.revision,
+        });
+        io.to(roomId).emit("room:updated", nextSnapshot);
+      }
     });
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
       const roomId = socket.data.roomId;
       if (!roomId) return;
       const nextSnapshot = rooms.leave(roomId, socket.id);
       if (nextSnapshot) io.to(roomId).emit("room:updated", nextSnapshot);
+      debug(
+        "room_left",
+        {
+          protocolVersion: 2,
+          socketId: socket.id,
+          roomId,
+          reason,
+          roomUsers: rooms.userCount(roomId),
+        },
+        "info",
+      );
       console.info(
         JSON.stringify({
           event: "room_left",
@@ -376,11 +522,13 @@ export function createRollTogetherServer(
             reject(new Error("Server did not bind to a TCP port"));
             return;
           }
+          debug("server_listening", { port: address.port }, "info");
           resolve(address.port);
         });
       });
     },
     close() {
+      debug("server_close_started", undefined, "info");
       return closeSocketServers(io, legacy.io);
     },
   };
@@ -404,6 +552,16 @@ function withinRateLimit(
   }
   data.updatesInWindow += 1;
   return data.updatesInWindow <= maxUpdatesPerSecond;
+}
+
+function debugEntriesFromBody(value: unknown) {
+  if (!isRecord(value) || !Array.isArray(value.entries)) return null;
+  if (value.entries.length === 0 || value.entries.length > 100) return null;
+  return value.entries.every(isDebugEntry) ? value.entries : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function createRoomId(): string {

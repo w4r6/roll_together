@@ -17,9 +17,15 @@ import {
   getEpisodePathFromUrl,
   getOrCreateUsername,
   getRoomEpisodeUrl,
-  log,
   updateActionIcon,
 } from "./common";
+import {
+  createDiagnosticLogger,
+  developmentDiagnosticsUrl,
+  installGlobalDiagnosticHandlers,
+  isDiagnosticMessage,
+  type DiagnosticEntry,
+} from "./diagnostics";
 import {
   PortName,
   type BackgroundToContentMessage,
@@ -55,8 +61,33 @@ if (!serverUrl) throw new Error("SYNC_SERVER is not configured");
 
 const sessions = new Map<number, TabSession>();
 const pendingDisconnects = new Map<number, ReturnType<typeof setTimeout>>();
+const pendingDiagnostics: DiagnosticEntry[] = [];
 let popupPort: chrome.runtime.Port | undefined;
 let popupTabId: number | undefined;
+let diagnosticsFlushTimer: ReturnType<typeof setTimeout> | undefined;
+let diagnosticsRetryDelayMs = 500;
+
+const log = createDiagnosticLogger("service_worker", enqueueDiagnostic);
+installGlobalDiagnosticHandlers(log);
+
+chrome.runtime.onMessage.addListener((value: unknown, sender) => {
+  if (!isDiagnosticMessage(value)) return;
+  enqueueDiagnostic({
+    ...value.entry,
+    details: {
+      ...(isPlainObject(value.entry.details)
+        ? value.entry.details
+        : value.entry.details === undefined
+          ? {}
+          : { value: value.entry.details }),
+      sender: {
+        tabId: sender.tab?.id,
+        frameId: sender.frameId,
+        url: sender.url,
+      },
+    },
+  });
+});
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === PortName.POPUP) {
@@ -67,16 +98,17 @@ chrome.runtime.onConnect.addListener((port) => {
     connectContentScript(port);
     return;
   }
-  log("Ignoring unknown port", port.name);
+  log("unknown_port_ignored", { portName: port.name }, "warn");
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  log("extension_installed", { reason: "runtime_on_installed" }, "info");
   getActionApi().disable();
   void getOrCreateUsername().catch((error: unknown) =>
-    log("Could not initialize username", error),
+    log("username_initialization_failed", { error }, "error"),
   );
   void updateActionIcon().catch((error: unknown) =>
-    log("Could not initialize action icon", error),
+    log("action_icon_initialization_failed", { error }, "error"),
   );
 });
 
@@ -99,6 +131,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 function connectPopup(port: chrome.runtime.Port): void {
+  log("popup_connected");
   popupPort = port;
   port.onMessage.addListener((value: unknown) => {
     const message = value as PopupToBackgroundMessage;
@@ -118,6 +151,7 @@ function connectPopup(port: chrome.runtime.Port): void {
   });
   port.onDisconnect.addListener(() => {
     if (popupPort === port) {
+      log("popup_disconnected");
       popupPort = undefined;
       popupTabId = undefined;
     }
@@ -127,9 +161,16 @@ function connectPopup(port: chrome.runtime.Port): void {
 function connectContentScript(port: chrome.runtime.Port): void {
   const tabId = port.sender?.tab?.id;
   if (tabId === undefined) {
+    log("content_port_missing_tab", undefined, "warn");
     port.disconnect();
     return;
   }
+
+  log("content_connected", {
+    tabId,
+    frameId: port.sender?.frameId ?? 0,
+    url: port.sender?.tab?.url,
+  });
 
   const pending = pendingDisconnects.get(tabId);
   if (pending) {
@@ -170,6 +211,14 @@ function handleContentMessage(
     session.episodePath = episodePath;
 
     sessions.set(tabId, session);
+    log("content_ready", {
+      tabId,
+      frameId,
+      episodePath,
+      roomId: message.roomId,
+      playback: message.playback,
+      resumedSession: existing !== undefined,
+    });
     getActionApi().enable(tabId);
     if (session.navigatingToEpisodePath === episodePath) {
       session.navigatingToEpisodePath = undefined;
@@ -199,11 +248,21 @@ function handleContentMessage(
   if (!session || session.port !== port) return;
 
   if (message.type === "room:connect") {
+    log("room_connect_received", {
+      tabId,
+      roomId: message.roomId,
+      playback: message.playback,
+    });
     void connectRoom(session, message.playback, message.roomId);
     return;
   }
 
   if (message.type === "playback:update" && session.socket?.connected) {
+    log("playback_update_sent", {
+      tabId,
+      roomId: session.roomId,
+      playback: message.playback,
+    });
     session.socket.emit("playback:update", message.playback);
   }
 }
@@ -211,6 +270,7 @@ function handleContentMessage(
 function requestRoomConnection(tabId: number): void {
   const session = sessions.get(tabId);
   if (!session) {
+    log("room_connect_missing_session", { tabId }, "warn");
     sendPopupStatus({
       state: "error",
       message: "No Crunchyroll video was found in this tab.",
@@ -219,6 +279,7 @@ function requestRoomConnection(tabId: number): void {
   }
 
   session.status = { state: "connecting" };
+  log("room_connect_requested", { tabId });
   sendPopupStatus(session.status);
   postToContent(session, { type: "room:connect-request" });
 }
@@ -230,6 +291,14 @@ async function connectRoom(
 ): Promise<void> {
   if (session.socket) disconnectSocket(session);
   const connectionAttempt = ++session.connectionAttempt;
+
+  log("socket_connect_started", {
+    tabId: session.tabId,
+    connectionAttempt,
+    roomId,
+    episodePath: session.episodePath,
+    playback,
+  });
 
   session.status = { state: "connecting" };
   updatePopupForSession(session);
@@ -244,7 +313,7 @@ async function connectRoom(
       message: "Could not load your username.",
     };
     updatePopupForSession(session);
-    log("Could not load username", error);
+    log("username_load_failed", { error, tabId: session.tabId }, "error");
     return;
   }
   if (session.connectionAttempt !== connectionAttempt) return;
@@ -285,12 +354,32 @@ async function connectRoom(
   );
   socket.on("room:error", (error) => {
     if (session.socket !== socket) return;
+    log(
+      "server_room_error",
+      {
+        tabId: session.tabId,
+        roomId: session.roomId,
+        code: error.code,
+        message: error.message,
+      },
+      "warn",
+    );
     postToContent(session, { type: "room:error", message: error.message });
     session.status = { state: "error", message: error.message };
     updatePopupForSession(session);
   });
   socket.on("connect_error", (error) => {
     if (session.socket !== socket) return;
+    log(
+      "socket_connect_failed",
+      {
+        tabId: session.tabId,
+        roomId: session.roomId,
+        connectionAttempt,
+        error,
+      },
+      "error",
+    );
     session.status = {
       state: "error",
       message: friendlyConnectionError(error.message),
@@ -303,6 +392,15 @@ async function connectRoom(
   });
   socket.on("disconnect", (reason) => {
     if (session.socket !== socket || reason === "io client disconnect") return;
+    log(
+      "socket_disconnected_unexpectedly",
+      {
+        tabId: session.tabId,
+        roomId: session.roomId,
+        reason,
+      },
+      "warn",
+    );
     session.status = { state: "connecting" };
     updatePopupForSession(session);
   });
@@ -314,8 +412,32 @@ function receiveSnapshot(
   value: unknown,
   notifyAboutMembershipChanges: boolean,
 ): void {
-  if (session.socket !== socket || !isRoomSnapshot(value)) return;
-  if (value.revision < session.latestRevision) return;
+  if (session.socket !== socket) {
+    log("snapshot_ignored_stale_socket", { tabId: session.tabId });
+    return;
+  }
+  if (!isRoomSnapshot(value)) {
+    log("snapshot_rejected_invalid", { tabId: session.tabId, value }, "warn");
+    return;
+  }
+  if (value.revision < session.latestRevision) {
+    log("snapshot_ignored_old_revision", {
+      tabId: session.tabId,
+      receivedRevision: value.revision,
+      latestRevision: session.latestRevision,
+    });
+    return;
+  }
+
+  log("snapshot_received", {
+    tabId: session.tabId,
+    roomId: value.roomId,
+    revision: value.revision,
+    state: value.state,
+    progress: value.progress,
+    episodePath: value.episodePath,
+    memberCount: value.members.length,
+  });
 
   const previousMembers = session.lastSnapshot?.members ?? [];
   const previousMemberIds = new Set(previousMembers.map((member) => member.id));
@@ -377,11 +499,13 @@ function receiveSnapshot(
 function disconnectRoom(tabId: number): void {
   const session = sessions.get(tabId);
   if (!session) {
+    log("room_disconnect_missing_session", { tabId });
     sendPopupStatus({ state: "disconnected" });
     return;
   }
 
   session.connectionAttempt += 1;
+  log("room_disconnect_requested", { tabId, roomId: session.roomId });
   disconnectSocket(session);
   delete session.roomId;
   delete session.lastSnapshot;
@@ -397,6 +521,11 @@ function disconnectRoom(tabId: number): void {
 
 function disconnectSocket(session: TabSession): void {
   if (!session.socket) return;
+  log("socket_disconnect_started", {
+    tabId: session.tabId,
+    roomId: session.roomId,
+    connected: session.socket.connected,
+  });
   session.socket.removeAllListeners();
   session.socket.disconnect();
   delete session.socket;
@@ -425,6 +554,7 @@ function removeSession(tabId: number): void {
 
   const session = sessions.get(tabId);
   if (!session) return;
+  log("tab_session_removed", { tabId, roomId: session.roomId });
   session.connectionAttempt += 1;
   disconnectSocket(session);
   sessions.delete(tabId);
@@ -445,7 +575,7 @@ function sendPopupStatus(status: ConnectionStatus): void {
   try {
     popupPort?.postMessage(message);
   } catch (error: unknown) {
-    log("Popup was unavailable", error);
+    log("popup_message_failed", { error }, "warn");
   }
 }
 
@@ -456,7 +586,11 @@ function postToContent(
   try {
     session.port.postMessage(message);
   } catch (error: unknown) {
-    log("Content script was unavailable", error);
+    log(
+      "content_message_failed",
+      { tabId: session.tabId, messageType: message.type, error },
+      "warn",
+    );
   }
 }
 
@@ -500,6 +634,11 @@ function handleTabUrlUpdate(tabId: number, url: string): void {
 
   session.pendingLocalEpisodePath = episodePath;
   session.awaitingLocalPlaybackPath = episodePath;
+  log("local_episode_update_sent", {
+    tabId,
+    roomId: session.roomId,
+    episodePath,
+  });
   session.socket.emit("episode:update", episodePath);
 }
 
@@ -516,7 +655,11 @@ function navigateToRoomEpisode(
     if (session.navigatingToEpisodePath === episodePath) {
       session.navigatingToEpisodePath = undefined;
     }
-    log("Could not open synchronized episode", error.message);
+    log(
+      "synchronized_episode_navigation_failed",
+      { tabId: session.tabId, episodePath, error: error.message },
+      "error",
+    );
   });
 }
 
@@ -526,4 +669,55 @@ function friendlyConnectionError(message: string): string {
   return "Could not connect to the sync server.";
 }
 
-log("Service worker loaded");
+function enqueueDiagnostic(entry: DiagnosticEntry): void {
+  pendingDiagnostics.push(entry);
+  if (pendingDiagnostics.length > 500) pendingDiagnostics.shift();
+  scheduleDiagnosticsFlush(100);
+}
+
+function scheduleDiagnosticsFlush(delayMs: number): void {
+  if (diagnosticsFlushTimer || !developmentDiagnosticsUrl()) return;
+  diagnosticsFlushTimer = setTimeout(() => {
+    diagnosticsFlushTimer = undefined;
+    void flushDiagnostics();
+  }, delayMs);
+}
+
+async function flushDiagnostics(): Promise<void> {
+  const url = developmentDiagnosticsUrl();
+  if (!url || pendingDiagnostics.length === 0) return;
+
+  const entries = pendingDiagnostics.splice(0, 100);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
+    if (!response.ok)
+      throw new Error(`Debug collector returned ${response.status}`);
+    diagnosticsRetryDelayMs = 500;
+    if (pendingDiagnostics.length > 0) scheduleDiagnosticsFlush(25);
+  } catch {
+    pendingDiagnostics.unshift(...entries);
+    if (pendingDiagnostics.length > 500)
+      pendingDiagnostics.splice(0, pendingDiagnostics.length - 500);
+    scheduleDiagnosticsFlush(diagnosticsRetryDelayMs);
+    diagnosticsRetryDelayMs = Math.min(diagnosticsRetryDelayMs * 2, 10_000);
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+log(
+  "service_worker_loaded",
+  {
+    extensionVersion: chrome.runtime.getManifest().version,
+    protocolVersion: PROTOCOL_VERSION,
+    serverUrl,
+    userAgent: navigator.userAgent,
+  },
+  "info",
+);

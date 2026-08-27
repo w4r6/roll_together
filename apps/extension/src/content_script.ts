@@ -6,10 +6,13 @@ import {
 
 import {
   getRoomIdFromUrl,
-  log,
   ROOM_QUERY_PARAMETER,
   SYNC_TOLERANCE_SECONDS,
 } from "./common";
+import {
+  createDiagnosticLogger,
+  installGlobalDiagnosticHandlers,
+} from "./diagnostics";
 import {
   PortName,
   type BackgroundToContentMessage,
@@ -25,6 +28,7 @@ let port: chrome.runtime.Port | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelayMs = 250;
 let player: HTMLVideoElement | undefined;
+let playerMissingLogged = false;
 let joinedRoomId = getRoomIdFromUrl(window.location.href);
 let notificationAudioContext: AudioContext | undefined;
 let notificationHost: HTMLElement | undefined;
@@ -35,6 +39,8 @@ const playbackEvents: ReadonlyArray<PlaybackEvent> = [
   "pause",
   "seeked",
 ];
+const log = createDiagnosticLogger("content_script");
+installGlobalDiagnosticHandlers(log);
 
 const playerObserver = new MutationObserver(() => attachBestPlayer());
 playerObserver.observe(document.documentElement, {
@@ -45,6 +51,15 @@ playerObserver.observe(document.documentElement, {
 connectPort();
 attachBestPlayer();
 document.addEventListener("fullscreenchange", mountNotificationHost);
+log(
+  "content_script_loaded",
+  {
+    url: window.location.href,
+    roomId: joinedRoomId,
+    visibilityState: document.visibilityState,
+  },
+  "info",
+);
 
 function connectPort(): void {
   if (port) return;
@@ -52,6 +67,7 @@ function connectPort(): void {
   const nextPort = chrome.runtime.connect({ name: PortName.CONTENT });
   port = nextPort;
   reconnectDelayMs = 250;
+  log("service_worker_port_connected");
 
   nextPort.onMessage.addListener((value: unknown) => {
     handleBackgroundMessage(value as BackgroundToContentMessage);
@@ -59,6 +75,7 @@ function connectPort(): void {
   nextPort.onDisconnect.addListener(() => {
     void chrome.runtime.lastError;
     if (port === nextPort) port = undefined;
+    log("service_worker_port_disconnected", { reconnectDelayMs }, "warn");
     scheduleReconnect();
   });
 
@@ -67,6 +84,7 @@ function connectPort(): void {
 
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
+  log("service_worker_reconnect_scheduled", { reconnectDelayMs });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
     connectPort();
@@ -79,11 +97,26 @@ function attachBestPlayer(): void {
 
   if (player) removePlayerListeners(player);
   player = findBestPlayer();
-  if (!player) return;
+  if (!player) {
+    if (!playerMissingLogged) {
+      playerMissingLogged = true;
+      log("video_player_not_found", {
+        videoElementCount: document.querySelectorAll("video").length,
+      });
+    }
+    return;
+  }
+  playerMissingLogged = false;
 
   for (const event of playbackEvents) {
     player.addEventListener(event, handleLocalPlayback);
   }
+  log("video_player_attached", {
+    width: player.clientWidth,
+    height: player.clientHeight,
+    readyState: player.readyState,
+    playback: currentPlayback(),
+  });
   announceReady();
 }
 
@@ -104,15 +137,22 @@ function removePlayerListeners(video: HTMLVideoElement): void {
 
 function handleLocalPlayback(event: Event): void {
   const eventName = event.type as PlaybackEvent;
-  if (suppressedEvents.delete(eventName)) return;
+  if (suppressedEvents.delete(eventName)) {
+    log("local_playback_event_suppressed", { eventName });
+    return;
+  }
 
   const playback = currentPlayback();
-  if (playback) postMessage({ type: "playback:update", playback });
+  if (playback) {
+    log("local_playback_changed", { eventName, playback });
+    postMessage({ type: "playback:update", playback });
+  }
 }
 
 function announceReady(): void {
   const playback = currentPlayback();
   if (!playback) return;
+  log("content_ready_announced", { roomId: joinedRoomId, playback });
   postMessage(
     joinedRoomId
       ? { type: "content:ready", playback, roomId: joinedRoomId }
@@ -134,6 +174,14 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
 
   if (message.type === "room:snapshot") {
     joinedRoomId = message.snapshot.roomId;
+    log("room_snapshot_received", {
+      roomId: message.snapshot.roomId,
+      episodePath: message.snapshot.episodePath,
+      revision: message.snapshot.revision,
+      state: message.snapshot.state,
+      progress: message.snapshot.progress,
+      memberCount: message.snapshot.members.length,
+    });
     void applySnapshot(message.snapshot);
     return;
   }
@@ -151,13 +199,16 @@ function handleBackgroundMessage(message: BackgroundToContentMessage): void {
   }
 
   if (message.type === "room:disconnected") {
+    log("room_disconnected", { roomId: joinedRoomId }, "info");
     joinedRoomId = undefined;
     suppressedEvents.clear();
     removeRoomIdFromAddressBar();
     return;
   }
 
-  if (message.type === "room:error") log(message.message);
+  if (message.type === "room:error") {
+    log("room_error_received", { message: message.message }, "warn");
+  }
 }
 
 function showMembershipNotification(
@@ -348,7 +399,7 @@ async function playMembershipSound(event: MembershipEvent): Promise<void> {
       playTone(notificationAudioContext, 523.25, now + 0.12, 0.36, 0.08);
     }
   } catch (error: unknown) {
-    log("Could not play membership notification", error);
+    log("membership_sound_failed", { event, error }, "warn");
   }
 }
 
@@ -373,33 +424,57 @@ function playTone(
 }
 
 async function applySnapshot(snapshot: RoomSnapshot): Promise<void> {
-  if (!player) return;
+  if (!player) {
+    log(
+      "snapshot_apply_skipped_without_player",
+      {
+        roomId: snapshot.roomId,
+        revision: snapshot.revision,
+      },
+      "warn",
+    );
+    return;
+  }
 
-  if (
-    Math.abs(player.currentTime - snapshot.progress) > SYNC_TOLERANCE_SECONDS
-  ) {
+  const driftSeconds = player.currentTime - snapshot.progress;
+  if (Math.abs(driftSeconds) > SYNC_TOLERANCE_SECONDS) {
+    log("playback_seek_applied", {
+      roomId: snapshot.roomId,
+      revision: snapshot.revision,
+      fromProgress: player.currentTime,
+      toProgress: snapshot.progress,
+      driftSeconds,
+    });
     suppressedEvents.add("seeked");
     try {
       player.currentTime = snapshot.progress;
     } catch (error: unknown) {
       suppressedEvents.delete("seeked");
-      log("Could not seek video", error);
+      log("playback_seek_failed", { error, driftSeconds }, "error");
     }
   }
 
   if (snapshot.state === "paused" && !player.paused) {
+    log("playback_pause_applied", {
+      roomId: snapshot.roomId,
+      revision: snapshot.revision,
+    });
     suppressedEvents.add("pause");
     player.pause();
     return;
   }
 
   if (snapshot.state === "playing" && player.paused) {
+    log("playback_play_applied", {
+      roomId: snapshot.roomId,
+      revision: snapshot.revision,
+    });
     suppressedEvents.add("play");
     try {
       await player.play();
     } catch (error: unknown) {
       suppressedEvents.delete("play");
-      log("Browser blocked synchronized playback", error);
+      log("synchronized_playback_blocked", { error }, "error");
     }
   }
 }
@@ -417,7 +492,11 @@ function postMessage(message: ContentToBackgroundMessage): void {
   try {
     port.postMessage(message);
   } catch (error: unknown) {
-    log("Could not reach service worker", error);
+    log(
+      "service_worker_message_failed",
+      { messageType: message.type, error },
+      "error",
+    );
     port = undefined;
     scheduleReconnect();
   }
@@ -430,6 +509,6 @@ function removeRoomIdFromAddressBar(): void {
     url.searchParams.delete(ROOM_QUERY_PARAMETER);
     window.history.replaceState(window.history.state, "", url.toString());
   } catch (error: unknown) {
-    log("Could not remove room from URL", error);
+    log("room_parameter_removal_failed", { error }, "warn");
   }
 }

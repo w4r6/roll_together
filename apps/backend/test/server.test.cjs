@@ -11,9 +11,14 @@ const { createRollTogetherServer } = require("../build/server");
 const sockets = new Set();
 let server;
 let url;
+let debugEntries;
 
 test.beforeEach(async () => {
-  server = createRollTogetherServer({ allowedOrigins: [] });
+  debugEntries = [];
+  server = createRollTogetherServer({
+    allowedOrigins: [],
+    debugLog: { record: (entry) => debugEntries.push(entry) },
+  });
   const port = await server.listen(0);
   url = `http://127.0.0.1:${port}`;
 });
@@ -217,6 +222,49 @@ test("reports v1 and v2 usage separately for migration monitoring", async () => 
   assert.equal(health.rooms, 2);
   assert.deepEqual(health.connectionsByProtocol, { v1: 1, v2: 1 });
   assert.deepEqual(health.roomsByProtocol, { v1: 1, v2: 1 });
+});
+
+test("accepts bounded development diagnostic batches", async () => {
+  const response = await fetch(`${url}/__debug/log`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      entries: [
+        {
+          timestamp: "2026-08-27T18:00:00.000Z",
+          level: "warn",
+          source: "content_script",
+          contextId: "test-context",
+          event: "playback_seek_failed",
+          details: { driftSeconds: 2.5 },
+        },
+      ],
+    }),
+  });
+
+  assert.equal(response.status, 204);
+  assert.ok(
+    debugEntries.some(
+      (entry) =>
+        entry.source === "content_script" &&
+        entry.event === "playback_seek_failed",
+    ),
+  );
+});
+
+test("rejects malformed development diagnostic batches", async () => {
+  const response = await fetch(`${url}/__debug/log`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ entries: [{ source: "missing required fields" }] }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.ok(
+    debugEntries.some(
+      (entry) => entry.event === "extension_debug_batch_rejected",
+    ),
+  );
 });
 
 function connect(auth) {

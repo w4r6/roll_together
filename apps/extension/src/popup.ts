@@ -1,4 +1,8 @@
-import { addRoomIdToUrl, log } from "./common";
+import { addRoomIdToUrl } from "./common";
+import {
+  createDiagnosticLogger,
+  installGlobalDiagnosticHandlers,
+} from "./diagnostics";
 import { queryActiveTab } from "./extension-api";
 import {
   PortName,
@@ -21,10 +25,14 @@ const openOptionsButton = button("openOptions");
 const inviteUrlInput = input("inviteUrl");
 const memberCount = element("memberCount");
 const memberList = element("memberList");
+const log = createDiagnosticLogger("popup");
+installGlobalDiagnosticHandlers(log);
 
 const port = chrome.runtime.connect({ name: PortName.POPUP });
 let activeTab: chrome.tabs.Tab | undefined;
 let inviteUrl = "";
+
+log("popup_loaded", undefined, "info");
 
 port.onMessage.addListener((value: unknown) => {
   const message = value as BackgroundToPopupMessage;
@@ -33,6 +41,7 @@ port.onMessage.addListener((value: unknown) => {
 
 createRoomButton.addEventListener("click", () => {
   if (activeTab?.id === undefined) return;
+  log("create_room_clicked", { tabId: activeTab.id });
   createRoomButton.disabled = true;
   post({ type: "popup:create", tabId: activeTab.id });
 });
@@ -45,7 +54,7 @@ copyUrlButton.addEventListener("click", async () => {
     setTimeout(() => (copyUrlButton.textContent = "Copy URL"), 1_500);
   } catch (error: unknown) {
     liveStatus.textContent = "Could not copy the invite link.";
-    log("Clipboard write failed", error);
+    log("invite_link_copy_failed", { error }, "error");
   }
 });
 
@@ -53,6 +62,7 @@ inviteUrlInput.addEventListener("focus", () => inviteUrlInput.select());
 
 disconnectButton.addEventListener("click", () => {
   if (activeTab?.id === undefined) return;
+  log("disconnect_clicked", { tabId: activeTab.id });
   post({ type: "popup:disconnect", tabId: activeTab.id });
 });
 
@@ -70,11 +80,13 @@ async function initialize(): Promise<void> {
     activeTab = tab;
 
     if (tab?.id === undefined) {
+      log("active_tab_missing", undefined, "warn");
       render({ state: "error", message: "No active browser tab was found." });
       return;
     }
     post({ type: "popup:status", tabId: tab.id });
   } catch (error: unknown) {
+    log("popup_initialization_failed", { error }, "error");
     render({
       state: "error",
       message:
@@ -86,6 +98,13 @@ async function initialize(): Promise<void> {
 }
 
 function render(status: ConnectionStatus): void {
+  log("connection_status_rendered", {
+    state: status.state,
+    ...(status.state === "connected"
+      ? { roomId: status.roomId, memberCount: status.members.length }
+      : {}),
+    ...(status.state === "error" ? { message: status.message } : {}),
+  });
   createRoomButton.disabled = false;
 
   if (status.state === "connecting") {

@@ -3,8 +3,6 @@ import { normalizeUsername, parseEpisodePath } from "@roll-together/protocol";
 import { getActionApi, getSyncStorage, setSyncStorage } from "./extension-api";
 import type { StorageData } from "./types";
 
-declare const process: { env: { NODE_ENV?: string } };
-
 const DEFAULT_COLOR = "#F78C25";
 export const SYNC_TOLERANCE_SECONDS = 0.25;
 export const ROOM_QUERY_PARAMETER = "rollTogetherRoom";
@@ -30,12 +28,6 @@ const USERNAME_NOUNS = [
   "Raven",
   "Tiger",
 ];
-const DEBUG = process.env.NODE_ENV === "development";
-
-export function log(...values: unknown[]): void {
-  if (DEBUG) console.debug("[Roll Together]", ...values);
-}
-
 export function getRoomIdFromUrl(url: string): string | undefined {
   try {
     return new URL(url).searchParams.get(ROOM_QUERY_PARAMETER) ?? undefined;

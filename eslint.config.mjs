@@ -7,6 +7,8 @@ export default tseslint.config(
     ignores: [
       "**/build/**",
       "**/build-firefox/**",
+      "**/build-production/**",
+      "**/build-production-firefox/**",
       "**/dist/**",
       "node_modules/**",
     ],
