@@ -5,12 +5,16 @@ services:
     environment_slug: node-js
     github:
       branch: main
-      deploy_on_push: true
+      # Deploys are driven by .github/workflows/deploy-digitalocean.yml (after the
+      # backend build passes); keep this false to avoid double deploys.
+      deploy_on_push: false
       repo: w4r6/roll_together
     source_dir: /
     build_command: npm run build:backend
     run_command: npm run start:prod -w roll_together_backend
     http_port: 3000
+    # instance_count MUST stay 1: rooms live in in-process memory and there is no
+    # socket.io adapter (e.g. Redis) to share state between instances.
     instance_count: 1
     instance_size_slug: basic-xxs
     health_check:

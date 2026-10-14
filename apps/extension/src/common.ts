@@ -1,4 +1,3 @@
-import _, { get } from "lodash";
 import { Radius, StorageData } from "./types";
 import { extensionAPI } from "./browser-compat";
 
@@ -28,15 +27,11 @@ export function getParameterByName(
   url: string,
   name: string = "rollTogetherRoom"
 ): string | null {
-  const queryString: string = /\?[^#]+(?=#|$)|$/.exec(url)![0];
-  const regex: RegExp = new RegExp("(?:[?&]|^)" + name + "=([^&#]*)");
-  const results: RegExpExecArray | null = regex.exec(queryString);
-
-  if (_.isNull(results) || results.length < 2) {
+  try {
+    return new URL(url).searchParams.get(name);
+  } catch {
     return null;
   }
-
-  return decodeURIComponent(results[1].replace(/\+/g, " "));
 }
 
 export function updateQueryStringParameter(
@@ -44,12 +39,12 @@ export function updateQueryStringParameter(
   key: string,
   value: string
 ): string {
-  const re: RegExp = new RegExp("([?&])" + key + "=.*?(&|$)", "i");
-  const separator: string = uri.indexOf("?") !== -1 ? "&" : "?";
-  if (uri.match(re)) {
-    return uri.replace(re, "$1" + key + "=" + value + "$2");
-  } else {
-    return uri + separator + key + "=" + value;
+  try {
+    const url = new URL(uri);
+    url.searchParams.set(key, value);
+    return url.toString();
+  } catch {
+    return uri;
   }
 }
 

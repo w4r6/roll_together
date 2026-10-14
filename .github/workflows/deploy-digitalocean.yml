@@ -1,19 +1,34 @@
 name: Deploy Backend to DigitalOcean
 
+# This workflow is the single deploy path for the backend.
+# .do/app.yaml has deploy_on_push: false so App Platform does not also
+# auto-deploy on every push to main.
+
 on:
   push:
     branches: [ main ]
     paths:
-      - '.do/app.yaml'
+      - '.do/**'
       - 'apps/backend/**'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/deploy-digitalocean.yml'
+      - '.github/workflows/backend-build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  build:
+    uses: ./.github/workflows/backend-build.yml
+
   deploy:
+    needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: do-deploy
+      cancel-in-progress: false
 
     steps:
     - uses: actions/checkout@v4
