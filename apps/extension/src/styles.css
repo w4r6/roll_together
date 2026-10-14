@@ -230,7 +230,16 @@ input:focus, textarea:focus, select:focus {
   width: 16px;
 }
 
-.firstPage .secondPage {
+.secondPage {
+  display: none;
+}
+
+.statusMessage {
+  color: #d32f2f;
+  text-align: center;
+}
+
+.statusMessage:empty {
   display: none;
 }
 

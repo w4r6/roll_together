@@ -1,6 +1,9 @@
 {
   "name": "roll_together",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "apps/*"
   ],

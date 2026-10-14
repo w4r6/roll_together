@@ -3,9 +3,24 @@ name: Build Cross-Browser Extension
 on:
   push:
     branches: [ main ]
+    # Note: path filters are not evaluated for tag pushes, so `v*` tags
+    # always trigger this workflow (and the release job) regardless of paths-ignore.
     tags: [ 'v*' ]
+    paths-ignore:
+      - 'apps/backend/**'
+      - '.do/**'
+      - '.github/workflows/backend-build.yml'
+      - '.github/workflows/deploy-digitalocean.yml'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - 'apps/backend/**'
+      - '.do/**'
+      - '.github/workflows/backend-build.yml'
+      - '.github/workflows/deploy-digitalocean.yml'
+
+permissions:
+  contents: read
 
 jobs:
   package:
@@ -20,7 +35,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '22'
         cache: 'npm'
         cache-dependency-path: package-lock.json
     
@@ -49,9 +64,21 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref_type == 'tag'
+    permissions:
+      contents: write
     
     steps:
     - uses: actions/checkout@v4
+    
+    - name: Verify tag matches manifest version
+      run: |
+        TAG_VERSION="${GITHUB_REF_NAME#v}"
+        MANIFEST_VERSION=$(node -p "require('./apps/extension/manifest.json').version")
+        if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+          echo "::error::Tag $GITHUB_REF_NAME (version $TAG_VERSION) does not match apps/extension/manifest.json version $MANIFEST_VERSION"
+          exit 1
+        fi
+        echo "Tag $GITHUB_REF_NAME matches manifest version $MANIFEST_VERSION"
     
     - name: Download Chrome package
       uses: actions/download-artifact@v4

@@ -44,8 +44,8 @@ npm run build:firefox
 ```bash
 npm run build:production:chrome
 npm run build:production:firefox
-npm run package
-# Creates rolltogether-chrome.zip and rolltogether-firefox.zip
+npm run package:extension
+# Creates apps/extension/rolltogether-chrome.zip and apps/extension/rolltogether-firefox.zip
 ```
 
 ### Development Mode
@@ -81,4 +81,4 @@ npm run watch:firefox
 - [ ] Create a Website
 
 ## Related Repos
-Backend repo: https://github.com/samuraiexx/roll_together_backend
+Backend: [`apps/backend`](../backend) in this repository.

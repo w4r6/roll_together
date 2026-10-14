@@ -1,3 +1,5 @@
+import type { Socket } from "socket.io-client";
+
 export enum Actions {
   PLAY = "play",
   PAUSE = "pause",
@@ -31,6 +33,8 @@ export enum MessageTypes {
   SW2CS_REMOTE_UPDATE = "sw2cs_remote_update",
   SW2CS_ROOM_CONNECTION = "sw2cs_room_connection",
   SW2CS_ROOM_DISCONNECT = "sw2cs_room_disconnect",
+  SW2CS_ROOM_JOINED = "sw2cs_room_joined",
+  SW2CS_RECONNECT = "sw2cs_reconnect",
   SW2PU_SEND_ROOM_ID = "sw2pu_update_ux",
   SW2PU_ROOM_ID = "sw2pu_room_id",
   PU2SW_REQUEST_ROOM_ID = "pu2sw_get_room_id",
@@ -39,6 +43,8 @@ export enum MessageTypes {
   CS2SW_LOCAL_UPDATE = "cs2w2_local_update",
   CS2SW_ROOM_CONNECTION = "cs2w2_room_connection",
   CS2SW_HEART_BEAT = "cs2w2_heart_beat",
+  CS2SW_HELLO = "cs2sw_hello",
+  CS2SW_REQUEST_RESYNC = "cs2sw_request_resync",
 }
 
 export enum PortName {
@@ -57,9 +63,17 @@ export type Message =
       type: MessageTypes.SW2CS_REMOTE_UPDATE;
       roomState: States;
       roomProgress: number;
+      // Periodic drift correction: only adjusts position, never play/pause state
+      sync?: boolean;
     }
   | { type: MessageTypes.SW2CS_ROOM_CONNECTION }
-  | { type: MessageTypes.SW2PU_SEND_ROOM_ID; roomId: string }
+  | { type: MessageTypes.SW2CS_ROOM_JOINED }
+  | {
+      type: MessageTypes.SW2PU_SEND_ROOM_ID;
+      tabId: number;
+      roomId?: string;
+      error?: string;
+    }
   | { type: MessageTypes.SW2PU_ROOM_ID; roomId: string }
   | { type: MessageTypes.PU2SW_CREATE_ROOM; tabId: number }
   | { type: MessageTypes.PU2SW_REQUEST_ROOM_ID; tabId: number }
@@ -75,6 +89,10 @@ export type Message =
       currentProgress: number;
     }
   | { type: MessageTypes.CS2SW_HEART_BEAT }
+  // First message on every port. reconnect: the page was already connected before (Service Worker restarted)
+  | { type: MessageTypes.CS2SW_HELLO; reconnect: boolean; inRoom: boolean }
+  | { type: MessageTypes.CS2SW_REQUEST_RESYNC }
+  | { type: MessageTypes.SW2CS_RECONNECT }
   | { type: MessageTypes.SW2CS_ROOM_DISCONNECT };
 
 export interface StorageData {
@@ -85,9 +103,12 @@ export interface StorageData {
 export interface TabInfo {
   tabId: number;
   port: chrome.runtime.Port;
-  socket?: SocketIOClient.Socket;
+  socket?: Socket;
   roomId?: string;
-  sentConnectionRequest: boolean;
+  // Room to join once the content script answers the connection request (undefined creates a new room)
+  requestedRoomId?: string;
+  connectionRequestedAt?: number;
+  lastKnownProgress?: number;
 }
 
 export interface Radius {

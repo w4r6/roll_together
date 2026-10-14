@@ -15,6 +15,9 @@ const disconnectButton: HTMLButtonElement = document.getElementById(
 const urlInput: HTMLInputElement = document.getElementById(
   "urlInput"
 ) as HTMLInputElement;
+const statusMessage: HTMLElement = document.getElementById(
+  "statusMessage"
+) as HTMLElement;
 let optionButtons: HTMLCollectionOf<HTMLButtonElement> =
   document.getElementsByClassName(
     "actionButton"
@@ -23,49 +26,75 @@ let optionButtons: HTMLCollectionOf<HTMLButtonElement> =
 declare const navigator: Navigator;
 
 // Global Variables
-const g_port = extensionAPI.runtime.connect({ name: PortName.POPUP });
+let g_port: chrome.runtime.Port | undefined = undefined;
+
+// The Service Worker can be stopped while the popup is open, which disconnects the port
+function getPort(): chrome.runtime.Port {
+  if (!g_port) {
+    const port = extensionAPI.runtime.connect({ name: PortName.POPUP });
+    port.onMessage.addListener(handleServiceWorkerMessage);
+    port.onDisconnect.addListener(() => {
+      if (g_port === port) {
+        g_port = undefined;
+      }
+    });
+    g_port = port;
+  }
+  return g_port;
+}
+
+function getActiveTab(callback: (tab: chrome.tabs.Tab | undefined) => void) {
+  extensionAPI.tabs.query(
+    { active: true, currentWindow: true },
+    function (tabs: chrome.tabs.Tab[]) {
+      callback(tabs[0]);
+    }
+  );
+}
 
 // Service Worker Message Handlers
-g_port.onMessage.addListener((message: Message) => {
+function handleServiceWorkerMessage(message: Message) {
   if (message.type != MessageTypes.SW2PU_SEND_ROOM_ID) {
-    throw "Invalid Message Type: " + message.type;
-  }
-
-  const roomId = message.roomId;
-  const connected: boolean = !!roomId;
-  log("Updating Popup UX", { roomId, connected });
-
-  if (!connected) {
-    renderDisconnectedPage();
+    log("Invalid Message Type: " + message.type);
     return;
   }
 
-  extensionAPI.tabs.query({ active: true, currentWindow: true }, function (tabs: chrome.tabs.Tab[]) {
-    const tab: chrome.tabs.Tab = tabs[0];
-    const url: string = updateQueryStringParameter(
+  getActiveTab((tab) => {
+    // Updates about other tabs must not change what the popup shows
+    if (!tab || tab.id !== message.tabId) {
+      return;
+    }
+
+    const roomId = message.roomId;
+    const connected: boolean = !!roomId;
+    log("Updating Popup UX", { roomId, connected, error: message.error });
+    statusMessage.textContent = message.error ?? "";
+
+    if (!connected) {
+      renderDisconnectedPage();
+      return;
+    }
+
+    urlInput.value = updateQueryStringParameter(
       tab.url!,
       "rollTogetherRoom",
-      `${roomId}`
+      roomId!
     );
-
-    urlInput.value = url;
     urlInput.focus();
     urlInput.select();
 
     renderConnectedPage();
   });
-});
+}
 
 // HTML Element Event Handlers
 createRoomButton.onclick = async function (): Promise<void> {
   log("Clicking CreateRoomButton");
-  extensionAPI.tabs.query(
-    { active: true, currentWindow: true },
-    function (tabs: chrome.tabs.Tab[]): void {
-      const tabId = tabs[0].id;
-      g_port.postMessage({ type: MessageTypes.PU2SW_CREATE_ROOM, tabId });
+  getActiveTab((tab) => {
+    if (tab?.id !== undefined) {
+      getPort().postMessage({ type: MessageTypes.PU2SW_CREATE_ROOM, tabId: tab.id });
     }
-  );
+  });
 };
 
 copyUrlButton.onclick = function (): void {
@@ -77,15 +106,11 @@ copyUrlButton.onclick = function (): void {
 
 disconnectButton.onclick = function (): void {
   log("Clicking DisconnectButton");
-  extensionAPI.tabs.query(
-    { active: true, currentWindow: true },
-    function (tabs: chrome.tabs.Tab[]): void {
-      const tabId = tabs[0].id;
-      if (tabId) {
-        g_port.postMessage({ type: MessageTypes.PU2SW_DISCONNECT_ROOM, tabId });
-      }
+  getActiveTab((tab) => {
+    if (tab?.id !== undefined) {
+      getPort().postMessage({ type: MessageTypes.PU2SW_DISCONNECT_ROOM, tabId: tab.id });
     }
-  );
+  });
 };
 
 // Tab Event Listeners
@@ -126,14 +151,14 @@ function renderConnectedPage() {
 }
 
 function requestRoomId() {
-  extensionAPI.tabs.query({ active: true, currentWindow: true }, function (tabs: chrome.tabs.Tab[]) {
-    const tab: chrome.tabs.Tab = tabs[0];
-    if (tab.id) {
-      g_port.postMessage({
+  getActiveTab((tab) => {
+    if (tab?.id !== undefined) {
+      getPort().postMessage({
         type: MessageTypes.PU2SW_REQUEST_ROOM_ID,
         tabId: tab.id,
       });
     } else {
+      statusMessage.textContent = "";
       renderDisconnectedPage();
     }
   });
